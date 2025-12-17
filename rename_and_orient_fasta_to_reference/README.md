@@ -1,6 +1,6 @@
 # Rename and Orient Chromosomes
 
-Rename and orient chromosomes in a FASTA file based on alignment to a reference genome.
+Rename and orient chromosomes in a FASTA file based on alignment to a reference genome. Reference header format like `>chrN` or `>chr_N` is expected in PAF file. 
 
 ## Requirements
 
