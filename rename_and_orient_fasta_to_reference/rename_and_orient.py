@@ -678,6 +678,20 @@ def save_mapping_tsv(
     print(f"Mapping summary saved to: {output_path}")
 
 
+def calculate_genome_length(fasta_path: Path) -> int:
+    """
+    Calculate total genome length from FASTA file.
+    
+    Args:
+        fasta_path: Path to FASTA file
+        
+    Returns:
+        Total length of all sequences
+    """
+    sequences = read_fasta(fasta_path)
+    return sum(len(seq) for seq in sequences.values())
+
+
 def reverse_complement(seq: str) -> str:
     """
     Return reverse complement of a DNA sequence.
@@ -937,6 +951,9 @@ def write_fasta(
     # Build unloc parent lookup: parent_chr_original -> parent_chr_new_suffix
     parent_suffix_lookup = {a.original_name: a.new_suffix for a in assignments}
     
+    # Track which sequences have been processed
+    processed_sequences = set()
+    
     with open(output_path, 'w') as f:
         # Write chromosomes in sorted order
         for a in assignments:
@@ -944,6 +961,8 @@ def write_fasta(
             if not seq:
                 print(f"  Warning: No sequence found for {a.original_name}")
                 continue
+            
+            processed_sequences.add(a.original_name)
             
             # Apply reverse complement if needed
             if a.needs_reverse_complement:
@@ -966,6 +985,8 @@ def write_fasta(
                 print(f"  Warning: No sequence found for {unloc.contig_name}")
                 continue
             
+            processed_sequences.add(unloc.contig_name)
+            
             # Apply reverse complement if needed (inherited from parent)
             if unloc.needs_reverse_complement:
                 seq = reverse_complement(seq)
@@ -977,6 +998,16 @@ def write_fasta(
             
             # Write header and sequence
             f.write(f">{new_name}\n")
+            for i in range(0, len(seq), line_width):
+                f.write(seq[i:i+line_width] + '\n')
+        
+        # Write remaining sequences (non-SUPER_ contigs) with original names and orientation
+        for seq_name, seq in sequences.items():
+            if seq_name in processed_sequences:
+                continue
+            
+            # Keep original name and orientation
+            f.write(f">{seq_name}\n")
             for i in range(0, len(seq), line_width):
                 f.write(seq[i:i+line_width] + '\n')
     
@@ -1119,6 +1150,18 @@ def main():
     write_fasta(sequences, sorted_assignments, unloc_mappings, rc_lookup, 
                 fasta_output_path, output_prefix)
     write_chromosome_list(sorted_assignments, unloc_mappings, csv_output_path, output_prefix)
+    
+    # Validate genome length consistency
+    print("\nValidating genome length...")
+    input_length = sum(len(seq) for seq in sequences.values())
+    output_length = calculate_genome_length(fasta_output_path)
+    
+    if input_length == output_length:
+        print(f"  OK: Genome length matches ({input_length:,} bp)")
+    else:
+        print(f"  ERROR: Genome length mismatch! Input: {input_length:,} bp, Output: {output_length:,} bp")
+        print("         This indicates a bug in sequence processing! Contact the developer to fix it.", file=sys.stderr)
+        sys.exit(1)
     
     print(f"\nDone! Output files:")
     print(f"  - FASTA: {fasta_output_path}")
