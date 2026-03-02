@@ -59,10 +59,16 @@ def parse_args() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        "--output", "-o",
-        required=True,
+        "--output-dir", "-d",
+        type=Path,
+        default=Path("./rename_and_orient"),
+        help="Output directory for generated files (will be created if it doesn't exist)"
+    )
+    
+    parser.add_argument(
+        "--output-prefix", "-o",
         type=str,
-        help="Output prefix for generated files"
+        help="Prefix for output file names (default: derived from input FASTA file name)"
     )
     
     parser.add_argument(
@@ -73,20 +79,26 @@ def parse_args() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        "--query-prefix", "-q",
+        "--query-chromosome-prefix", "-q",
         type=str,
         default="SUPER_",
-        help="Prefix for query chromosome names in input FASTA (e.g., SUPER_, scaffold_, contig)"
+        help="Prefix for query chromosome names in input FASTA (e.g., SUPER_, scaffold_, contig_)"
     )
     
     parser.add_argument(
-        "--output-prefix", "-x",
+        "--output-chromosome-prefix", "-x",
         type=str,
         default="SUPER_",
         help="Prefix for output chromosome names (e.g., SUPER_, chr_, chr, or empty string for no prefix)"
     )
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Set default output prefix if not provided
+    if args.output_prefix is None:
+        args.output_prefix = args.fasta.stem
+    
+    return args
 
 
 def read_fasta(fasta_path: Path) -> Dict[str, str]:
@@ -209,7 +221,7 @@ def detect_reference_prefix(records: List[PAFRecord]) -> str:
 
 
 def filter_paf_records(records: List[PAFRecord], 
-                       query_prefix: str = "SUPER_",
+                       query_chromosome_prefix: str = "SUPER_",
                        target_prefix: str = None) -> Tuple[List[PAFRecord], str]:
     """
     Filter PAF records to keep only those matching query and target prefixes.
@@ -217,7 +229,7 @@ def filter_paf_records(records: List[PAFRecord],
     
     Args:
         records: List of PAF records
-        query_prefix: Required prefix for query names
+        query_chromosome_prefix: Required prefix for query names
         target_prefix: Required prefix for target names (auto-detected if None)
         
     Returns:
@@ -228,7 +240,7 @@ def filter_paf_records(records: List[PAFRecord],
     
     filtered = []
     for record in records:
-        if record.query_name.startswith(query_prefix) and \
+        if record.query_name.startswith(query_chromosome_prefix) and \
            record.target_name.startswith(target_prefix):
             filtered.append(record)
     return filtered, target_prefix
@@ -237,17 +249,17 @@ def filter_paf_records(records: List[PAFRecord],
 def validate_paf_fasta_consistency(
     paf_records: List[PAFRecord],
     fasta_sequences: Dict[str, str],
-    query_prefix: str = "SUPER_"
+    query_chromosome_prefix: str = "SUPER_"
 ) -> Tuple[bool, List[str], List[str]]:
     """
     Validate consistency between PAF and FASTA files for chromosomes with given prefix.
     
-    Checks that all chromosomes with query_prefix in PAF exist in FASTA and vice versa.
+    Checks that all chromosomes with query_chromosome_prefix in PAF exist in FASTA and vice versa.
     
     Args:
         paf_records: List of PAF records
         fasta_sequences: Dictionary of FASTA sequences
-        query_prefix: Prefix for chromosome names
+        query_chromosome_prefix: Prefix for chromosome names
         
     Returns:
         Tuple of:
@@ -258,13 +270,13 @@ def validate_paf_fasta_consistency(
     # Get unique chromosome names from PAF (excluding unloc)
     paf_chromosomes = set()
     for record in paf_records:
-        if record.query_name.startswith(query_prefix) and "_unloc_" not in record.query_name:
+        if record.query_name.startswith(query_chromosome_prefix) and "_unloc_" not in record.query_name:
             paf_chromosomes.add(record.query_name)
     
     # Get chromosome names from FASTA (excluding unloc)
     fasta_chromosomes = set()
     for name in fasta_sequences.keys():
-        if name.startswith(query_prefix) and "_unloc_" not in name:
+        if name.startswith(query_chromosome_prefix) and "_unloc_" not in name:
             fasta_chromosomes.add(name)
     
     # Find mismatches
@@ -717,7 +729,7 @@ def reverse_complement(seq: str) -> str:
 def resolve_chromosome_assignments(
     mappings: List[ChromosomeMapping],
     sequences: Dict[str, str],
-    query_prefix: str = "SUPER_",
+    query_chromosome_prefix: str = "SUPER_",
     output_prefix: str = "SUPER_"
 ) -> Tuple[List[FinalChromosomeAssignment], Dict[str, bool]]:
     """
@@ -733,7 +745,7 @@ def resolve_chromosome_assignments(
     Args:
         mappings: List of ChromosomeMapping objects from PAF analysis
         sequences: Dictionary of all sequences (for finding unmapped ones)
-        query_prefix: Input chromosome prefix (e.g., "SUPER_", "scaffold_")
+        query_chromosome_prefix: Input chromosome prefix (e.g., "SUPER_", "scaffold_")
         output_prefix: Output chromosome prefix (e.g., "SUPER_", "chr_", "chr", "")
         
     Returns:
@@ -746,7 +758,7 @@ def resolve_chromosome_assignments(
     
     # First, identify all chromosomes (excluding unloc contigs)
     all_chr_names = {name for name in sequences.keys() 
-                     if name.startswith(query_prefix) and "_unloc_" not in name}
+                     if name.startswith(query_chromosome_prefix) and "_unloc_" not in name}
     mapped_names = {m.query_name for m in mappings if "_unloc_" not in m.query_name}
     unmapped_names = all_chr_names - mapped_names
     
@@ -755,7 +767,7 @@ def resolve_chromosome_assignments(
     sex_mappings = []
     
     for m in mappings:
-        query_suffix = extract_chromosome_suffix(m.query_name, query_prefix)
+        query_suffix = extract_chromosome_suffix(m.query_name, query_chromosome_prefix)
         if "_unloc_" in m.query_name:
             continue
             
@@ -768,7 +780,7 @@ def resolve_chromosome_assignments(
     # These chromosomes keep their original names, so we can't assign these numbers
     reserved_numbers = set()
     for name in unmapped_names:
-        suffix = extract_chromosome_suffix(name, query_prefix)
+        suffix = extract_chromosome_suffix(name, query_chromosome_prefix)
         if is_autosome_suffix(suffix):
             reserved_numbers.add(int(suffix))
             print(f"  Reserved: number {suffix} (unmapped {name} keeps original name)")
@@ -779,7 +791,7 @@ def resolve_chromosome_assignments(
     
     # Process sex chromosomes first - they keep their original suffix
     for m in sex_mappings:
-        query_suffix = extract_chromosome_suffix(m.query_name, query_prefix)
+        query_suffix = extract_chromosome_suffix(m.query_name, query_chromosome_prefix)
         target_suffix = m.target_suffix
         
         # If sex chromosome maps to autosome target, mark that number as skipped
@@ -885,7 +897,7 @@ def resolve_chromosome_assignments(
     
     # Handle unmapped chromosomes - they keep original suffix with new prefix
     for name in unmapped_names:
-        suffix = extract_chromosome_suffix(name, query_prefix)
+        suffix = extract_chromosome_suffix(name, query_chromosome_prefix)
         assignment = FinalChromosomeAssignment(
             original_name=name,
             new_name=f"{output_prefix}{suffix}",
@@ -1057,8 +1069,11 @@ def main():
     """Main entry point."""
     args = parse_args()
     
-    query_prefix = args.query_prefix
-    output_prefix = args.output_prefix
+    query_chromosome_prefix = args.query_chromosome_prefix
+    output_chromosome_prefix = args.output_chromosome_prefix
+    
+    # Create output directory
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     
     # Validate inputs
     if not args.fasta.exists():
@@ -1078,14 +1093,14 @@ def main():
     print(f"  Found {len(paf_records)} alignment records")
     
     # Filter records (auto-detect reference prefix)
-    filtered_records, ref_prefix = filter_paf_records(paf_records, query_prefix)
+    filtered_records, ref_prefix = filter_paf_records(paf_records, query_chromosome_prefix)
     print(f"  Detected reference prefix: '{ref_prefix}'")
-    print(f"  After filtering ({query_prefix}* -> {ref_prefix}*): {len(filtered_records)} records")
+    print(f"  After filtering ({query_chromosome_prefix}* -> {ref_prefix}*): {len(filtered_records)} records")
     
     # Validate PAF/FASTA consistency
     print("\nValidating PAF/FASTA consistency...")
     is_valid, in_paf_not_fasta, in_fasta_not_paf = validate_paf_fasta_consistency(
-        paf_records, sequences, query_prefix
+        paf_records, sequences, query_chromosome_prefix
     )
     
     if in_paf_not_fasta:
@@ -1097,7 +1112,7 @@ def main():
         print(f"           These will keep original suffix (no alignment data).")
     
     if is_valid:
-        print(f"  OK: All {query_prefix}* chromosomes match between PAF and FASTA")
+        print(f"  OK: All {query_chromosome_prefix}* chromosomes match between PAF and FASTA")
     
     # Build chromosome mappings
     print(f"\nBuilding chromosome mappings (min coverage: {args.min_coverage:.0%})...")
@@ -1109,9 +1124,9 @@ def main():
     
     # Resolve chromosome assignments with conflict handling
     print("\nResolving chromosome assignments...")
-    print(f"  Input prefix: '{query_prefix}' -> Output prefix: '{output_prefix}'")
+    print(f"  Input prefix: '{query_chromosome_prefix}' -> Output prefix: '{output_chromosome_prefix}'")
     assignments, rc_lookup = resolve_chromosome_assignments(
-        mappings, sequences, query_prefix, output_prefix
+        mappings, sequences, query_chromosome_prefix, output_chromosome_prefix
     )
     
     # Build unloc mappings (based on parent chromosome orientation from rc_lookup)
@@ -1127,7 +1142,7 @@ def main():
     sorted_assignments = sort_assignments_for_output(assignments)
     
     # Save mapping summary to TSV (after assignments are ready)
-    mapping_tsv_path = Path(f"{args.output}.mapping.tsv")
+    mapping_tsv_path = args.output_dir / f"{args.output_prefix}.mapping.tsv"
     save_mapping_tsv(mappings, sorted_assignments, mapping_tsv_path)
     
     # Print final assignment summary
@@ -1143,13 +1158,13 @@ def main():
     print_unloc_summary(unloc_mappings)
     
     # Generate output files
-    fasta_output_path = Path(f"{args.output}.fa")
-    csv_output_path = Path(f"{args.output}.chromosome.list.csv")
+    fasta_output_path = args.output_dir / f"{args.output_prefix}.fa"
+    csv_output_path = args.output_dir / f"{args.output_prefix}.chromosome.list.csv"
     
     print("\nWriting output files...")
     write_fasta(sequences, sorted_assignments, unloc_mappings, rc_lookup, 
-                fasta_output_path, output_prefix)
-    write_chromosome_list(sorted_assignments, unloc_mappings, csv_output_path, output_prefix)
+                fasta_output_path, output_chromosome_prefix)
+    write_chromosome_list(sorted_assignments, unloc_mappings, csv_output_path, output_chromosome_prefix)
     
     # Validate genome length consistency
     print("\nValidating genome length...")

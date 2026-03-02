@@ -13,30 +13,33 @@ Rename and orient chromosomes in a FASTA file based on alignment to a reference 
 # Basic usage (SUPER_* -> SUPER_*)
 python rename_and_orient.py \
     --fasta input.fa \
-    --paf alignment.paf \
-    --output output_prefix
+    --paf alignment.paf
 
 # Rename to chr format (SUPER_* -> chr1, chr2, chrW...)
 python rename_and_orient.py \
     --fasta input.fa \
     --paf alignment.paf \
-    --output output_prefix \
-    --output-prefix chr
+    --output-chromosome-prefix chr
 
 # From scaffold format to chr_ format
 python rename_and_orient.py \
     --fasta input.fa \
     --paf alignment.paf \
-    --output output_prefix \
-    --query-prefix scaffold_ \
-    --output-prefix chr_
+    --query-chromosome-prefix scaffold_ \
+    --output-chromosome-prefix chr_
 
 # Just numbers (1, 2, 3, W, Z...)
 python rename_and_orient.py \
     --fasta input.fa \
     --paf alignment.paf \
-    --output output_prefix \
-    --output-prefix ""
+    --output-chromosome-prefix ""
+
+# Custom output directory and prefix
+python rename_and_orient.py \
+    --fasta input.fa \
+    --paf alignment.paf \
+    --output-dir results \
+    --output-prefix my_analysis
 ```
 
 ## Creating alignment with FastGA
@@ -55,16 +58,17 @@ FastGA -v -P query.fa reference.fa > query_vs_reference.paf
 |-----------|-------|---------|-------------|
 | `--fasta` | `-f` | required | Input FASTA (gzip supported) |
 | `--paf` | `-p` | required | PAF alignment file |
-| `--output` | `-o` | required | Output prefix |
+| `--output-dir` | `-d` | `./rename_and_orient` | Output directory for generated files |
+| `--output-prefix` | `-o` | input FASTA stem | Prefix for output file names |
 | `--min-coverage` | `-c` | 0.5 | Min alignment coverage for renaming |
-| `--query-prefix` | `-q` | `SUPER_` | Input chromosome prefix |
-| `--output-prefix` | `-x` | `SUPER_` | Output chromosome prefix |
+| `--query-chromosome-prefix` | `-q` | `SUPER_` | Input chromosome prefix |
+| `--output-chromosome-prefix` | `-x` | `SUPER_` | Output chromosome prefix |
 
 ## Output files
 
-- `{output}.fa` — renamed FASTA with corrected orientation
-- `{output}.chromosome.list.csv` — chromosome mapping (name, suffix, is_main)
-- `{output}.mapping.tsv` — detailed alignment statistics
+- `{output_dir}/{output_prefix}.fa` — renamed FASTA with corrected orientation
+- `{output_dir}/{output_prefix}.chromosome.list.csv` — chromosome mapping (name, suffix, is_main)
+- `{output_dir}/{output_prefix}.mapping.tsv` — detailed alignment statistics
 
 ## Features
 
