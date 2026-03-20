@@ -215,7 +215,7 @@ def detect_reference_prefix(records: List[PAFRecord]) -> str:
         elif target.startswith('chr') and len(target) > 3:
             # Check if it's chrN format (chr1, chr2, chrW, etc.)
             suffix = target[3:]
-            if suffix[0].isdigit() or suffix[0].upper() in 'WXYZ':
+            if suffix[0].isdigit() or suffix[0].upper() in 'BWXYZ':
                 return 'chr'
     return 'chr_'  # Default
 
@@ -328,8 +328,8 @@ class FinalChromosomeAssignment:
     is_sex_chromosome: bool
     
 
-# Sex chromosome patterns (letters or letters with numbers like Z1, Z2)
-SEX_CHROMOSOME_SUFFIXES = {'W', 'X', 'Y', 'Z'}
+# Sex chromosome patterns (letters or letters with numbers like Z1, Z2, X1X2, W1W2, B1B2)
+SEX_CHROMOSOME_SUFFIXES = {'W', 'X', 'Y', 'Z', 'B'}
 
 
 def is_sex_chromosome_suffix(suffix: str) -> bool:
