@@ -6,6 +6,8 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
+__version__ = "1.0.0"
+
 import argparse
 import gzip
 import sys
@@ -42,6 +44,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Rename and orient chromosomes based on reference alignment",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    parser.add_argument(
+        "--version", "-v",
+        action="version",
+        version=f"%(prog)s {__version__}"
     )
     
     parser.add_argument(
@@ -90,6 +98,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="SUPER_",
         help="Prefix for output chromosome names (e.g., SUPER_, chr_, chr, or empty string for no prefix)"
+    )
+    
+    parser.add_argument(
+        "--reference-chromosome-prefix", "-r",
+        type=str,
+        default=None,
+        help="Prefix for reference chromosome names in PAF target (e.g., chr_, chr, SUPER_, scaffold_). "
+             "Auto-detected from PAF if not specified."
     )
     
     args = parser.parse_args()
@@ -1092,9 +1108,13 @@ def main():
     paf_records = parse_paf(args.paf)
     print(f"  Found {len(paf_records)} alignment records")
     
-    # Filter records (auto-detect reference prefix)
-    filtered_records, ref_prefix = filter_paf_records(paf_records, query_chromosome_prefix)
-    print(f"  Detected reference prefix: '{ref_prefix}'")
+    # Filter records (auto-detect reference prefix or use provided)
+    ref_prefix_arg = args.reference_chromosome_prefix
+    filtered_records, ref_prefix = filter_paf_records(paf_records, query_chromosome_prefix, ref_prefix_arg)
+    if ref_prefix_arg:
+        print(f"  Reference prefix (provided): '{ref_prefix}'")
+    else:
+        print(f"  Reference prefix (auto-detected): '{ref_prefix}'")
     print(f"  After filtering ({query_chromosome_prefix}* -> {ref_prefix}*): {len(filtered_records)} records")
     
     # Validate PAF/FASTA consistency
