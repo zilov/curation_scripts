@@ -10,6 +10,7 @@ __version__ = "1.0.0"
 
 import argparse
 import gzip
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -216,24 +217,37 @@ def parse_paf(paf_path: Path) -> List[PAFRecord]:
 
 def detect_reference_prefix(records: List[PAFRecord]) -> str:
     """
-    Auto-detect reference chromosome prefix (chr_ or chr).
+    Auto-detect reference chromosome prefix from PAF target names.
+    
+    Strategy: collect all unique target names, extract the alphabetic+underscore
+    prefix (everything before the first digit or sex-chr letter), pick the most
+    common one.  Falls back to 'chr_' if nothing is found.
     
     Args:
         records: List of PAF records
         
     Returns:
-        Detected prefix ('chr_' or 'chr')
+        Detected prefix string (e.g. 'chr_', 'chr', 'SUPER_', 'scaffold_')
     """
+    prefix_counts: Dict[str, int] = defaultdict(int)
+    seen_targets: set = set()
+    
     for record in records:
         target = record.target_name
-        if target.startswith('chr_'):
-            return 'chr_'
-        elif target.startswith('chr') and len(target) > 3:
-            # Check if it's chrN format (chr1, chr2, chrW, etc.)
-            suffix = target[3:]
-            if suffix[0].isdigit() or suffix[0].upper() in 'BWXYZ':
-                return 'chr'
-    return 'chr_'  # Default
+        if target in seen_targets:
+            continue
+        seen_targets.add(target)
+        
+        # Extract leading non-digit prefix (letters, underscores, dots)
+        m = re.match(r'^([A-Za-z_\.]+)', target)
+        if m:
+            prefix_counts[m.group(1)] += 1
+    
+    if not prefix_counts:
+        return 'chr_'
+    
+    # Return prefix with the most unique target names
+    return max(prefix_counts, key=lambda k: prefix_counts[k])
 
 
 def filter_paf_records(records: List[PAFRecord], 
