@@ -12,6 +12,7 @@ from rename_and_orient import (
     is_sex_chromosome_suffix,
     is_autosome_suffix,
     resolve_chromosome_assignments,
+    detect_reference_prefix,
     PAFRecord,
     ChromosomeMapping,
     FinalChromosomeAssignment,
@@ -288,3 +289,113 @@ class TestResolveChromosomeAssignments:
         super_w = next(a for a in assignments if a.original_name == "SUPER_W")
         assert super_w.new_name == "SUPER_W"  # Keeps original suffix
         assert super_w.is_sex_chromosome
+
+
+class TestDetectReferencePrefix:
+    """Test detect_reference_prefix function."""
+
+    @pytest.mark.parametrize("target_names,expected_prefix", [
+        # Standard chr_ (Ensembl / insect assemblies)
+        (["chr_1", "chr_2", "chr_3", "chr_W"], "chr_"),
+        # Standard chr (UCSC)
+        (["chr1", "chr2", "chr3", "chrW"], "chr"),
+        # SUPER_ reference
+        (["SUPER_1", "SUPER_2", "SUPER_3", "SUPER_W"], "SUPER_"),
+        # scaffold_ reference
+        (["scaffold_1", "scaffold_2", "scaffold_3"], "scaffold_"),
+        # Mixed: most common wins
+        (["chr_1", "chr_2", "chr_3", "unplaced_1"], "chr_"),
+    ])
+    def test_detect_prefix_from_target_names(self, target_names, expected_prefix):
+        """Test that correct prefix is detected from target names."""
+        records = [
+            PAFRecord(f"query_{i}", 100, 0, 100, "+", name, 100, 0, 100, 100, 100, 60)
+            for i, name in enumerate(target_names)
+        ]
+        result = detect_reference_prefix(records)
+        assert result == expected_prefix
+
+    def test_detect_prefix_empty_records(self):
+        """Test fallback when no records provided."""
+        result = detect_reference_prefix([])
+        assert result == "chr_"
+
+    def test_detect_prefix_no_alpha_prefix(self):
+        """Test fallback when targets have no alphabetic prefix."""
+        records = [
+            PAFRecord("q1", 100, 0, 100, "+", "1", 100, 0, 100, 100, 100, 60),
+        ]
+        result = detect_reference_prefix(records)
+        assert result == "chr_"
+
+    def test_detect_prefix_many_unlocs_dont_override_chromosomes(self):
+        """Test that 1000 unloc contigs don't override 10 main chromosomes.
+        
+        Unloc names like SUPER_1_unloc_1 still yield prefix 'SUPER_' (regex
+        stops at first digit), so counts are additive and SUPER_ still wins.
+        """
+        chr_records = [
+            PAFRecord(f"q_{i}", 100, 0, 100, "+", f"SUPER_{i}", 100, 0, 100, 100, 100, 60)
+            for i in range(1, 11)  # 10 chromosomes: SUPER_1 .. SUPER_10
+        ]
+        unloc_records = [
+            PAFRecord(f"qu_{i}", 100, 0, 100, "+", f"SUPER_{i // 100 + 1}_unloc_{i % 100 + 1}", 100, 0, 100, 100, 100, 60)
+            for i in range(1000)  # 1000 unloc contigs
+        ]
+        result = detect_reference_prefix(chr_records + unloc_records)
+        assert result == "SUPER_"
+
+
+class TestFilterPafRecordsAutoDetect:
+    """Test filter_paf_records auto-detection of reference prefix."""
+
+    def test_autodetect_super_reference(self):
+        """Test auto-detection when reference uses SUPER_ prefix."""
+        records = [
+            PAFRecord("scaffold_1", 100, 0, 100, "+", "SUPER_1", 100, 0, 100, 100, 100, 60),
+            PAFRecord("scaffold_2", 100, 0, 100, "-", "SUPER_2", 100, 0, 100, 100, 100, 60),
+            PAFRecord("scaffold_3", 100, 0, 100, "+", "SUPER_W", 100, 0, 100, 100, 100, 60),
+        ]
+        filtered, prefix = filter_paf_records(records, "scaffold_")
+        assert prefix == "SUPER_"
+        assert len(filtered) == 3
+
+    def test_autodetect_chr_reference(self):
+        """Test auto-detection when reference uses chr prefix (no underscore)."""
+        records = [
+            PAFRecord("SUPER_1", 100, 0, 100, "+", "chr1", 100, 0, 100, 100, 100, 60),
+            PAFRecord("SUPER_2", 100, 0, 100, "-", "chr2", 100, 0, 100, 100, 100, 60),
+        ]
+        filtered, prefix = filter_paf_records(records, "SUPER_")
+        assert prefix == "chr"
+        assert len(filtered) == 2
+
+    def test_autodetect_chr_underscore_reference(self):
+        """Test auto-detection when reference uses chr_ prefix."""
+        records = [
+            PAFRecord("SUPER_1", 100, 0, 100, "+", "chr_1", 100, 0, 100, 100, 100, 60),
+            PAFRecord("SUPER_2", 100, 0, 100, "-", "chr_2", 100, 0, 100, 100, 100, 60),
+        ]
+        filtered, prefix = filter_paf_records(records, "SUPER_")
+        assert prefix == "chr_"
+        assert len(filtered) == 2
+
+    def test_provided_prefix_overrides_autodetect(self):
+        """Test that explicitly provided prefix overrides auto-detection."""
+        records = [
+            PAFRecord("SUPER_1", 100, 0, 100, "+", "chr_1", 100, 0, 100, 100, 100, 60),
+        ]
+        # Provide wrong prefix on purpose — should use it, result in 0 filtered
+        filtered, prefix = filter_paf_records(records, "SUPER_", "scaffold_")
+        assert prefix == "scaffold_"
+        assert len(filtered) == 0
+
+    def test_filter_excludes_non_matching_query_prefix(self):
+        """Test that records with wrong query prefix are excluded."""
+        records = [
+            PAFRecord("SUPER_1", 100, 0, 100, "+", "chr_1", 100, 0, 100, 100, 100, 60),
+            PAFRecord("contig_1", 100, 0, 100, "+", "chr_2", 100, 0, 100, 100, 100, 60),
+        ]
+        filtered, prefix = filter_paf_records(records, "SUPER_")
+        assert len(filtered) == 1
+        assert filtered[0].query_name == "SUPER_1"
