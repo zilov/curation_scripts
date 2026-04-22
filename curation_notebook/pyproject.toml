@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "curation-pipeline"
+version = "0.1.0"
+description = "Genome curation pipeline notebook library"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=15.0.0",
+    "pyyaml>=6.0",
+]
+
+[tool.uv]
+package = true
+
+[project.scripts]
+curate = "curation_pipeline.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
