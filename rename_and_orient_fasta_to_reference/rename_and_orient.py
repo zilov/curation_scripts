@@ -6,7 +6,7 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import argparse
 import gzip
@@ -1032,8 +1032,15 @@ def write_fasta(
     # Track which sequences have been processed
     processed_sequences = set()
     
+    # Build per-parent unloc lookup: original_parent_name -> sorted list of UnlocMapping
+    unloc_by_parent: Dict[str, List[UnlocMapping]] = defaultdict(list)
+    for unloc in unloc_mappings:
+        unloc_by_parent[unloc.parent_chromosome].append(unloc)
+    for parent in unloc_by_parent:
+        unloc_by_parent[parent].sort(key=lambda x: x.unloc_number)
+
     with open(output_path, 'w') as f:
-        # Write chromosomes in sorted order
+        # Write chromosomes in sorted order, each followed by its unloc contigs
         for a in assignments:
             seq = sequences.get(a.original_name, '')
             if not seq:
@@ -1050,34 +1057,28 @@ def write_fasta(
             f.write(f">{a.new_name}\n")
             for i in range(0, len(seq), line_width):
                 f.write(seq[i:i+line_width] + '\n')
-        
-        # Write unloc contigs grouped by parent chromosome
-        # Sort by parent, then by unloc number
-        unloc_sorted = sorted(unloc_mappings, 
-                              key=lambda x: (parent_suffix_lookup.get(x.parent_chromosome, x.parent_chromosome),
-                                            x.unloc_number))
-        
-        for unloc in unloc_sorted:
-            seq = sequences.get(unloc.contig_name, '')
-            if not seq:
-                print(f"  Warning: No sequence found for {unloc.contig_name}")
-                continue
             
-            processed_sequences.add(unloc.contig_name)
-            
-            # Apply reverse complement if needed (inherited from parent)
-            if unloc.needs_reverse_complement:
-                seq = reverse_complement(seq)
-            
-            # Generate new name: <output_prefix><new_parent_suffix>_unloc_<N>
-            new_parent_suffix = parent_suffix_lookup.get(unloc.parent_chromosome, 
-                                                         extract_chromosome_suffix(unloc.parent_chromosome, output_prefix))
-            new_name = f"{output_prefix}{new_parent_suffix}_unloc_{unloc.unloc_number}"
-            
-            # Write header and sequence
-            f.write(f">{new_name}\n")
-            for i in range(0, len(seq), line_width):
-                f.write(seq[i:i+line_width] + '\n')
+            # Write unloc contigs belonging to this parent immediately after
+            for unloc in unloc_by_parent.get(a.original_name, []):
+                unloc_seq = sequences.get(unloc.contig_name, '')
+                if not unloc_seq:
+                    print(f"  Warning: No sequence found for {unloc.contig_name}")
+                    continue
+                
+                processed_sequences.add(unloc.contig_name)
+                
+                # Apply reverse complement if needed (inherited from parent)
+                if unloc.needs_reverse_complement:
+                    unloc_seq = reverse_complement(unloc_seq)
+                
+                # Generate new name: <output_prefix><new_parent_suffix>_unloc_<N>
+                new_parent_suffix = parent_suffix_lookup.get(unloc.parent_chromosome,
+                                                             extract_chromosome_suffix(unloc.parent_chromosome, output_prefix))
+                new_name = f"{output_prefix}{new_parent_suffix}_unloc_{unloc.unloc_number}"
+                
+                f.write(f">{new_name}\n")
+                for i in range(0, len(unloc_seq), line_width):
+                    f.write(unloc_seq[i:i+line_width] + '\n')
         
         # Write remaining sequences (non-SUPER_ contigs) with original names and orientation
         for seq_name, seq in sequences.items():
@@ -1112,21 +1113,23 @@ def write_chromosome_list(
     # Build parent suffix lookup
     parent_suffix_lookup = {a.original_name: a.new_suffix for a in assignments}
     
+    # Build per-parent unloc lookup
+    unloc_by_parent_csv: Dict[str, List[UnlocMapping]] = defaultdict(list)
+    for unloc in unloc_mappings:
+        unloc_by_parent_csv[unloc.parent_chromosome].append(unloc)
+    for parent in unloc_by_parent_csv:
+        unloc_by_parent_csv[parent].sort(key=lambda x: x.unloc_number)
+
     with open(output_path, 'w') as f:
-        # Write main chromosomes
+        # Write main chromosomes each followed by their unloc contigs
         for a in assignments:
             f.write(f"{a.new_name},{a.new_suffix},yes\n")
-        
-        # Write unloc contigs grouped by parent
-        unloc_sorted = sorted(unloc_mappings,
-                              key=lambda x: (parent_suffix_lookup.get(x.parent_chromosome, x.parent_chromosome),
-                                            x.unloc_number))
-        
-        for unloc in unloc_sorted:
-            new_parent_suffix = parent_suffix_lookup.get(unloc.parent_chromosome,
-                                                         extract_chromosome_suffix(unloc.parent_chromosome, output_prefix))
-            new_name = f"{output_prefix}{new_parent_suffix}_unloc_{unloc.unloc_number}"
-            f.write(f"{new_name},{new_parent_suffix},no\n")
+            
+            for unloc in unloc_by_parent_csv.get(a.original_name, []):
+                new_parent_suffix = parent_suffix_lookup.get(unloc.parent_chromosome,
+                                                             extract_chromosome_suffix(unloc.parent_chromosome, output_prefix))
+                new_name = f"{output_prefix}{new_parent_suffix}_unloc_{unloc.unloc_number}"
+                f.write(f"{new_name},{new_parent_suffix},no\n")
     
     print(f"Chromosome list written to: {output_path}")
 

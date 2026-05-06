@@ -9,6 +9,10 @@ from rename_and_orient import (
     build_chromosome_mappings,
     reverse_complement,
     extract_chromosome_suffix,
+    write_fasta,
+    write_chromosome_list,
+    build_unloc_mappings,
+    sort_assignments_for_output,
     is_sex_chromosome_suffix,
     is_autosome_suffix,
     resolve_chromosome_assignments,
@@ -533,3 +537,144 @@ class TestCalculateTargetAlignmentsNested:
         assert stats["chr_1"]["plus"] == 50_000
         assert stats["chr_1"]["minus"] == 40_000
         assert stats["chr_1"]["total"] == 90_000  # non-overlapping: 0-50k + 60k-100k
+
+
+class TestUnlocOrderInOutput:
+    """Test that unloc contigs appear immediately after their parent chromosome
+    in both the FASTA output and the chromosome list CSV.
+
+    Before the fix, write_fasta() wrote all chromosomes first and then all unloc
+    contigs as a single block at the end (just before shrapnel).  The expected
+    behaviour is:
+        SUPER_1
+        SUPER_1_unloc_1
+        SUPER_1_unloc_2
+        SUPER_2
+        SUPER_2_unloc_1
+        SUPER_3          <- no unloc
+        <shrapnel>
+    """
+
+    # ------------------------------------------------------------------ helpers
+
+    def _make_assignment(self, original, new_name, suffix, rc=False, sex=False):
+        return FinalChromosomeAssignment(
+            original_name=original,
+            new_name=new_name,
+            new_suffix=suffix,
+            needs_reverse_complement=rc,
+            is_sex_chromosome=sex,
+        )
+
+    def _make_unloc(self, contig, parent, num, rc=False):
+        from rename_and_orient import UnlocMapping
+        return UnlocMapping(
+            contig_name=contig,
+            parent_chromosome=parent,
+            unloc_number=num,
+            needs_reverse_complement=rc,
+        )
+
+    def _sequences(self):
+        return {
+            "SUPER_1":         "AAAA",
+            "SUPER_1_unloc_1": "CCCC",
+            "SUPER_1_unloc_2": "GGGG",
+            "SUPER_2":         "TTTT",
+            "SUPER_2_unloc_1": "ACAC",
+            "SUPER_3":         "TGTG",
+            "shrapnel_1":      "NNNN",
+        }
+
+    # ------------------------------------------------------------------ fasta
+
+    def test_unloc_immediately_follows_parent_in_fasta(self, tmp_path):
+        """Headers in output FASTA must follow parent → unloc(s) → next parent order."""
+        assignments = sort_assignments_for_output([
+            self._make_assignment("SUPER_1", "SUPER_1", "1"),
+            self._make_assignment("SUPER_2", "SUPER_2", "2"),
+            self._make_assignment("SUPER_3", "SUPER_3", "3"),
+        ])
+        unloc_mappings = [
+            self._make_unloc("SUPER_1_unloc_1", "SUPER_1", 1),
+            self._make_unloc("SUPER_1_unloc_2", "SUPER_1", 2),
+            self._make_unloc("SUPER_2_unloc_1", "SUPER_2", 1),
+        ]
+        rc_lookup = {}
+
+        out_fasta = tmp_path / "out.fa"
+        write_fasta(self._sequences(), assignments, unloc_mappings, rc_lookup,
+                    out_fasta, output_prefix="SUPER_")
+
+        headers = [line.strip()[1:] for line in out_fasta.read_text().splitlines()
+                   if line.startswith(">")]
+
+        expected_order = [
+            "SUPER_1",
+            "SUPER_1_unloc_1",
+            "SUPER_1_unloc_2",
+            "SUPER_2",
+            "SUPER_2_unloc_1",
+            "SUPER_3",
+            "shrapnel_1",
+        ]
+        assert headers == expected_order, (
+            f"Unexpected FASTA order.\nGot:      {headers}\nExpected: {expected_order}"
+        )
+
+    def test_unloc_not_grouped_at_end_of_chromosomes(self, tmp_path):
+        """Regression: unloc contigs must NOT appear after all chromosomes."""
+        assignments = sort_assignments_for_output([
+            self._make_assignment("SUPER_1", "SUPER_1", "1"),
+            self._make_assignment("SUPER_2", "SUPER_2", "2"),
+        ])
+        unloc_mappings = [
+            self._make_unloc("SUPER_1_unloc_1", "SUPER_1", 1),
+        ]
+
+        out_fasta = tmp_path / "out.fa"
+        write_fasta(self._sequences(), assignments, unloc_mappings, {},
+                    out_fasta, output_prefix="SUPER_")
+
+        headers = [line.strip()[1:] for line in out_fasta.read_text().splitlines()
+                   if line.startswith(">")]
+
+        super2_idx = headers.index("SUPER_2")
+        unloc_idx = headers.index("SUPER_1_unloc_1")
+
+        assert unloc_idx < super2_idx, (
+            "SUPER_1_unloc_1 must appear before SUPER_2, not after all chromosomes. "
+            f"Got order: {headers}"
+        )
+
+    # ------------------------------------------------------------------ csv
+
+    def test_unloc_immediately_follows_parent_in_csv(self, tmp_path):
+        """Rows in chromosome list CSV must follow parent → unloc(s) → next parent."""
+        assignments = sort_assignments_for_output([
+            self._make_assignment("SUPER_1", "SUPER_1", "1"),
+            self._make_assignment("SUPER_2", "SUPER_2", "2"),
+            self._make_assignment("SUPER_3", "SUPER_3", "3"),
+        ])
+        unloc_mappings = [
+            self._make_unloc("SUPER_1_unloc_1", "SUPER_1", 1),
+            self._make_unloc("SUPER_1_unloc_2", "SUPER_1", 2),
+            self._make_unloc("SUPER_2_unloc_1", "SUPER_2", 1),
+        ]
+
+        out_csv = tmp_path / "out.csv"
+        write_chromosome_list(assignments, unloc_mappings, out_csv, output_prefix="SUPER_")
+
+        names = [line.split(",")[0] for line in out_csv.read_text().splitlines() if line]
+
+        expected_order = [
+            "SUPER_1",
+            "SUPER_1_unloc_1",
+            "SUPER_1_unloc_2",
+            "SUPER_2",
+            "SUPER_2_unloc_1",
+            "SUPER_3",
+        ]
+        assert names == expected_order, (
+            f"Unexpected CSV order.\nGot:      {names}\nExpected: {expected_order}"
+        )
