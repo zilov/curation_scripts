@@ -13,6 +13,8 @@ from rename_and_orient import (
     is_autosome_suffix,
     resolve_chromosome_assignments,
     detect_reference_prefix,
+    merge_intervals,
+    calculate_target_alignments,
     PAFRecord,
     ChromosomeMapping,
     FinalChromosomeAssignment,
@@ -399,3 +401,135 @@ class TestFilterPafRecordsAutoDetect:
         filtered, prefix = filter_paf_records(records, "SUPER_")
         assert len(filtered) == 1
         assert filtered[0].query_name == "SUPER_1"
+
+class TestMergeIntervals:
+    """Test merge_intervals function."""
+
+    def test_no_overlap(self):
+        """Non-overlapping intervals are returned unchanged."""
+        intervals = [(0, 10), (20, 30), (40, 50)]
+        result = merge_intervals(intervals)
+        assert result == [(0, 10), (20, 30), (40, 50)]
+
+    def test_fully_nested(self):
+        """Interval fully contained within another is absorbed."""
+        intervals = [(0, 100), (10, 50), (20, 80)]
+        result = merge_intervals(intervals)
+        assert result == [(0, 100)]
+        assert sum(e - s for s, e in result) == 100
+
+    def test_partial_overlap(self):
+        """Partially overlapping intervals are merged into one."""
+        intervals = [(0, 60), (40, 100)]
+        result = merge_intervals(intervals)
+        assert result == [(0, 100)]
+
+    def test_adjacent_intervals(self):
+        """Adjacent (touching) intervals are merged."""
+        intervals = [(0, 50), (50, 100)]
+        result = merge_intervals(intervals)
+        assert result == [(0, 100)]
+
+    def test_identical_intervals(self):
+        """Many identical intervals collapse to one."""
+        intervals = [(40302, 110580)] * 20
+        result = merge_intervals(intervals)
+        assert result == [(40302, 110580)]
+        assert sum(e - s for s, e in result) == 110580 - 40302
+
+    def test_unsorted_input(self):
+        """Unsorted input is handled correctly."""
+        intervals = [(50, 100), (0, 60)]
+        result = merge_intervals(intervals)
+        assert result == [(0, 100)]
+
+    def test_empty_input(self):
+        """Empty list returns empty list."""
+        assert merge_intervals([]) == []
+
+    def test_single_interval(self):
+        """Single interval is returned as-is."""
+        assert merge_intervals([(5, 15)]) == [(5, 15)]
+
+
+class TestCalculateTargetAlignmentsNested:
+    """Test that calculate_target_alignments correctly handles nested/overlapping
+    alignments — the real-world bug where SUPER_19 was inflated 37x on chr_19."""
+
+    def _make_record(self, query_name, query_len, qstart, qend, strand, target):
+        return PAFRecord(
+            query_name=query_name,
+            query_length=query_len,
+            query_start=qstart,
+            query_end=qend,
+            strand=strand,
+            target_name=target,
+            target_length=100_000_000,
+            target_start=0,
+            target_end=qend - qstart,
+            num_matches=qend - qstart,
+            alignment_length=qend - qstart,
+            mapping_quality=60,
+        )
+
+    def test_identical_records_count_once(self):
+        """20 identical alignments to the same region must count as one region."""
+        records = [
+            self._make_record("SUPER_19", 55_000_000, 40302, 110580, "+", "chr_19")
+            for _ in range(20)
+        ]
+        stats = calculate_target_alignments(records)
+        expected = 110580 - 40302  # 70278 bp
+        assert stats["chr_19"]["total"] == expected
+
+    def test_nested_alignments_not_double_counted(self):
+        """Alignments where one interval contains another count unique bases only."""
+        records = [
+            self._make_record("SUPER_19", 55_000_000, 0, 100_000, "+", "chr_19"),   # outer
+            self._make_record("SUPER_19", 55_000_000, 10_000, 50_000, "+", "chr_19"),  # inner
+            self._make_record("SUPER_19", 55_000_000, 20_000, 80_000, "+", "chr_19"),  # inner
+        ]
+        stats = calculate_target_alignments(records)
+        assert stats["chr_19"]["total"] == 100_000  # only the outer range
+
+    def test_correct_winner_with_nested_inflated_loser(self):
+        """chr_17 wins over chr_19 when chr_19 has nested duplicate alignments.
+
+        Mirrors the production bug: SUPER_19 had 37x inflated chr_19 score,
+        but chr_17 had genuine unique coverage > chr_19 actual unique coverage.
+        """
+        query_len = 55_000_000
+
+        # chr_19: same 70 kbp region repeated 37 times → raw 2.6M, unique 70 kbp
+        chr19_records = [
+            self._make_record("SUPER_19", query_len, 40302, 110580, "-", "chr_19")
+            for _ in range(37)
+        ]
+
+        # chr_17: real unique 53 Mbp coverage
+        chr17_records = [
+            self._make_record("SUPER_19", query_len, i * 1_000_000, (i + 1) * 1_000_000, "+", "chr_17")
+            for i in range(53)
+        ]
+
+        stats = calculate_target_alignments(chr19_records + chr17_records)
+
+        assert stats["chr_19"]["total"] == 110580 - 40302  # 70 278 bp — not 37x
+        assert stats["chr_17"]["total"] == 53_000_000
+
+        # chr_17 must win
+        best = max(stats, key=lambda t: stats[t]["total"])
+        assert best == "chr_17"
+
+    def test_strand_totals_also_deduplicated(self):
+        """Plus and minus strand totals are also based on unique intervals."""
+        records = [
+            self._make_record("SUPER_1", 1_000_000, 0, 50_000, "+", "chr_1"),
+            self._make_record("SUPER_1", 1_000_000, 0, 50_000, "+", "chr_1"),  # duplicate +
+            self._make_record("SUPER_1", 1_000_000, 60_000, 100_000, "-", "chr_1"),
+            self._make_record("SUPER_1", 1_000_000, 60_000, 100_000, "-", "chr_1"),  # duplicate -
+        ]
+        stats = calculate_target_alignments(records)
+        assert stats["chr_1"]["plus"] == 50_000
+        assert stats["chr_1"]["minus"] == 40_000
+        assert stats["chr_1"]["total"] == 90_000  # non-overlapping: 0-50k + 60k-100k

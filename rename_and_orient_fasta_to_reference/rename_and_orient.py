@@ -6,7 +6,7 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import argparse
 import gzip
@@ -464,9 +464,36 @@ def group_alignments_by_query(records: List[PAFRecord]) -> Dict[str, List[PAFRec
     return dict(groups)
 
 
+def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """
+    Merge overlapping intervals into non-overlapping ones.
+    
+    Args:
+        intervals: List of (start, end) tuples
+        
+    Returns:
+        Sorted list of non-overlapping (start, end) tuples
+    """
+    if not intervals:
+        return []
+    intervals = sorted(intervals)
+    merged = [list(intervals[0])]
+    for start, end in intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
 def calculate_target_alignments(records: List[PAFRecord]) -> Dict[str, Dict[str, int]]:
     """
     Calculate total alignment lengths for each query-target pair.
+    
+    Overlapping query intervals on the same target are merged before summing
+    to avoid double-counting repeated alignments to the same region
+    (e.g. when a repetitive reference chromosome attracts many duplicate hits).
+    Strand totals use the same de-duplicated intervals per strand.
     
     Args:
         records: List of PAF records for a single query
@@ -474,18 +501,31 @@ def calculate_target_alignments(records: List[PAFRecord]) -> Dict[str, Dict[str,
     Returns:
         Dictionary mapping target names to dict with 'total', 'plus', 'minus' lengths
     """
-    target_stats = defaultdict(lambda: {'total': 0, 'plus': 0, 'minus': 0})
-    
+    # Collect intervals per target, separated by strand
+    target_intervals: Dict[str, Dict[str, List[Tuple[int, int]]]] = defaultdict(
+        lambda: {'+': [], '-': []}
+    )
+
     for record in records:
-        alignment_len = record.alignment_block_length
-        target_stats[record.target_name]['total'] += alignment_len
-        
-        if record.strand == '+':
-            target_stats[record.target_name]['plus'] += alignment_len
-        else:
-            target_stats[record.target_name]['minus'] += alignment_len
-    
-    return dict(target_stats)
+        strand = record.strand
+        interval = (record.query_start, record.query_end)
+        target_intervals[record.target_name][strand].append(interval)
+
+    target_stats: Dict[str, Dict[str, int]] = {}
+    for target_name, strands in target_intervals.items():
+        plus_len = sum(e - s for s, e in merge_intervals(strands['+'
+                                                                    ]))
+        minus_len = sum(e - s for s, e in merge_intervals(strands['-']))
+        # For the total, merge all intervals together (regardless of strand)
+        all_intervals = strands['+'] + strands['-']
+        total_len = sum(e - s for s, e in merge_intervals(all_intervals))
+        target_stats[target_name] = {
+            'total': total_len,
+            'plus': plus_len,
+            'minus': minus_len,
+        }
+
+    return target_stats
 
 
 def determine_best_target(target_stats: Dict[str, Dict[str, int]]) -> Tuple[str, Dict[str, int]]:
