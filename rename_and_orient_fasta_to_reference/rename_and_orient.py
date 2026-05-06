@@ -6,7 +6,7 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import argparse
 import gzip
@@ -218,36 +218,32 @@ def parse_paf(paf_path: Path) -> List[PAFRecord]:
 def detect_reference_prefix(records: List[PAFRecord]) -> str:
     """
     Auto-detect reference chromosome prefix from PAF target names.
-    
-    Strategy: collect all unique target names, extract the alphabetic+underscore
-    prefix (everything before the first digit or sex-chr letter), pick the most
-    common one.  Falls back to 'chr_' if nothing is found.
-    
-    Args:
-        records: List of PAF records
-        
-    Returns:
-        Detected prefix string (e.g. 'chr_', 'chr', 'SUPER_', 'scaffold_')
+
+    Sums query alignment length per prefix and returns the winner, which
+    correctly favours main chromosomes (chr_, SUPER_) over many short-hit
+    unplaced contigs (NW_, NT_).  Logs the result to stderr.
+
+    Raises ValueError if no alphabetic prefix is found — use
+    --reference-chromosome-prefix to specify it explicitly.
     """
-    prefix_counts: Dict[str, int] = defaultdict(int)
-    seen_targets: set = set()
-    
+    prefix_aln_length: Dict[str, int] = defaultdict(int)
+
     for record in records:
-        target = record.target_name
-        if target in seen_targets:
-            continue
-        seen_targets.add(target)
-        
-        # Extract leading non-digit prefix (letters, underscores, dots)
-        m = re.match(r'^([A-Za-z_\.]+)', target)
+        m = re.match(r'^([A-Za-z_\.]+)', record.target_name)
         if m:
-            prefix_counts[m.group(1)] += 1
-    
-    if not prefix_counts:
-        return 'chr_'
-    
-    # Return prefix with the most unique target names
-    return max(prefix_counts, key=lambda k: prefix_counts[k])
+            prefix_aln_length[m.group(1)] += record.query_end - record.query_start
+
+    if not prefix_aln_length:
+        raise ValueError(
+            "Could not detect reference chromosome prefix from PAF file: "
+            "no target names with a recognisable alphabetic prefix were found. "
+            "Please specify --reference-chromosome-prefix explicitly."
+        )
+
+    detected = max(prefix_aln_length, key=lambda p: prefix_aln_length[p])
+    print(f"[detect_reference_prefix] Auto-detected reference prefix: '{detected}' "
+          f"(total aligned bases: {prefix_aln_length[detected]:,})", file=sys.stderr)
+    return detected
 
 
 def filter_paf_records(records: List[PAFRecord], 

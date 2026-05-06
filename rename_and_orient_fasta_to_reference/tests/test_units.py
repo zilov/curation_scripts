@@ -318,17 +318,17 @@ class TestDetectReferencePrefix:
         assert result == expected_prefix
 
     def test_detect_prefix_empty_records(self):
-        """Test fallback when no records provided."""
-        result = detect_reference_prefix([])
-        assert result == "chr_"
+        """Test that ValueError is raised when no records are provided."""
+        with pytest.raises(ValueError, match="reference chromosome prefix"):
+            detect_reference_prefix([])
 
     def test_detect_prefix_no_alpha_prefix(self):
-        """Test fallback when targets have no alphabetic prefix."""
+        """Test that ValueError is raised when targets have no alphabetic prefix."""
         records = [
             PAFRecord("q1", 100, 0, 100, "+", "1", 100, 0, 100, 100, 100, 60),
         ]
-        result = detect_reference_prefix(records)
-        assert result == "chr_"
+        with pytest.raises(ValueError, match="reference chromosome prefix"):
+            detect_reference_prefix(records)
 
     def test_detect_prefix_many_unlocs_dont_override_chromosomes(self):
         """Test that 1000 unloc contigs don't override 10 main chromosomes.
