@@ -17,6 +17,71 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
+def _pearson_r(xs: List[float], ys: List[float]) -> float:
+    """
+    Pearson correlation coefficient between two lists of floats.
+    Returns 0.0 if fewer than 2 points or zero variance in either variable.
+    """
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sx  = sum((x - mx) ** 2 for x in xs) ** 0.5
+    sy  = sum((y - my) ** 2 for y in ys) ** 0.5
+    if sx == 0 or sy == 0:
+        return 0.0
+    return num / (sx * sy)
+
+
+def needs_reverse_complement_by_correlation(
+    records: List,
+    target_length: int,
+) -> bool:
+    """
+    Decide whether a query chromosome needs reverse-complement using Pearson
+    correlation between query midpoints and target midpoints.
+
+    For '+' blocks: r = corr(query_mid, target_mid).
+    For '-' blocks: r = corr(query_mid, target_length - target_mid).
+
+    The strand whose r is higher wins.  This correctly ignores large structural
+    inversions (their blocks are scattered → low r) while syntenic blocks
+    form a clean diagonal → high r.
+
+    Args:
+        records:       PAFRecord objects for one query→best_target pair.
+        target_length: Length of the target chromosome.
+
+    Returns:
+        True  if reverse complement is needed,
+        False if the chromosome is already correctly oriented.
+    """
+    plus_recs  = [r for r in records if r.strand == '+']
+    minus_recs = [r for r in records if r.strand == '-']
+
+    r_plus = 0.0
+    if len(plus_recs) >= 2:
+        xs = [(r.query_start + r.query_end) / 2 for r in plus_recs]
+        ys = [(r.target_start + r.target_end) / 2 for r in plus_recs]
+        r_plus = _pearson_r(xs, ys)
+
+    r_minus = 0.0
+    if len(minus_recs) >= 2:
+        xs = [(r.query_start + r.query_end) / 2 for r in minus_recs]
+        ys = [target_length - (r.target_start + r.target_end) / 2 for r in minus_recs]
+        r_minus = _pearson_r(xs, ys)
+
+    # If correlation is uninformative for both strands (< 2 blocks each),
+    # fall back to naive length comparison.
+    if r_plus == 0.0 and r_minus == 0.0:
+        plus_len  = sum(r.query_end - r.query_start for r in plus_recs)
+        minus_len = sum(r.query_end - r.query_start for r in minus_recs)
+        return minus_len > plus_len
+
+    return r_minus > r_plus
+
 
 @dataclass
 class PAFRecord:
@@ -109,6 +174,14 @@ def parse_args() -> argparse.Namespace:
              "Auto-detected from PAF if not specified."
     )
     
+    parser.add_argument(
+        "--plot-alignments", "-P",
+        action="store_true",
+        default=False,
+        help="Generate scatter plots of PAF alignment blocks for each chromosome "
+             "(saved to <output-dir>/plots/). Requires matplotlib."
+    )
+
     args = parser.parse_args()
     
     # Set default output prefix if not provided
@@ -599,9 +672,13 @@ def build_chromosome_mappings(
             print(f"  Warning: {query_name} -> {best_target} coverage {coverage:.2%} below threshold")
             continue
         
-        # Determine orientation
-        needs_rc = best_stats['minus'] > best_stats['plus']
-        
+        # Determine orientation using Pearson correlation method.
+        # Correlation between query_mid and target_mid identifies the dominant
+        # syntenic strand while ignoring large structural inversions.
+        best_target_records = [r for r in query_records if r.target_name == best_target]
+        target_length = best_target_records[0].target_length if best_target_records else 0
+        needs_rc = needs_reverse_complement_by_correlation(best_target_records, target_length)
+
         mapping = ChromosomeMapping(
             query_name=query_name,
             query_length=query_length,
@@ -1134,6 +1211,129 @@ def write_chromosome_list(
     print(f"Chromosome list written to: {output_path}")
 
 
+def plot_chromosome_alignments(
+    records: List[PAFRecord],
+    mappings: List[ChromosomeMapping],
+    output_dir: Path,
+) -> None:
+    """
+    Generate scatter plots of PAF alignment blocks for each mapped chromosome.
+
+    Left panel:  raw alignment blocks (query_mid vs target_mid), coloured by strand.
+    Right panel: same data after applying the orientation decision (target axis
+                 flipped when RC is needed), so a correct decision shows a clean
+                 diagonal from bottom-left to top-right.
+
+    Args:
+        records:    Filtered PAF records.
+        mappings:   Chromosome mappings with orientation decisions.
+        output_dir: Directory where PNG files are written.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(
+            "  Warning: matplotlib not installed — skipping plots. "
+            "Install with: pip install matplotlib",
+            file=sys.stderr,
+        )
+        return
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Index records by query→target
+    from collections import defaultdict
+    blocks_index: Dict[str, List[PAFRecord]] = defaultdict(list)
+    for r in records:
+        blocks_index[f"{r.query_name}->{r.target_name}"].append(r)
+
+    for mapping in mappings:
+        key = f"{mapping.query_name}->{mapping.target_name}"
+        recs = blocks_index.get(key, [])
+        if not recs:
+            continue
+
+        plus_recs  = [r for r in recs if r.strand == "+"]
+        minus_recs = [r for r in recs if r.strand == "-"]
+        target_len = max(r.target_end for r in recs)
+        needs_rc   = mapping.needs_reverse_complement
+
+        fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+        # ---- Left: raw scatter ----
+        ax = axes[0]
+        if plus_recs:
+            ax.scatter(
+                [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
+                [(r.target_start + r.target_end) / 2e6 for r in plus_recs],
+                s=1, alpha=0.4, color="steelblue", label="+ strand",
+            )
+        if minus_recs:
+            ax.scatter(
+                [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
+                [(r.target_start + r.target_end) / 2e6 for r in minus_recs],
+                s=1, alpha=0.4, color="firebrick", label="- strand",
+            )
+        ax.set_xlabel(f"{mapping.query_name} position (Mb)")
+        ax.set_ylabel(f"{mapping.target_name} position (Mb)")
+        ax.set_title("All alignment blocks")
+        ax.legend(markerscale=8, loc="upper left")
+
+        # ---- Right: after applying orientation decision ----
+        ax2 = axes[1]
+        if needs_rc:
+            # Flip target axis so the signal reads left→right
+            if plus_recs:
+                ax2.scatter(
+                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
+                    [(target_len - (r.target_start + r.target_end) / 2) / 1e6 for r in plus_recs],
+                    s=1, alpha=0.4, color="steelblue", label="+ strand",
+                )
+            if minus_recs:
+                ax2.scatter(
+                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
+                    [(target_len - (r.target_start + r.target_end) / 2) / 1e6 for r in minus_recs],
+                    s=1, alpha=0.4, color="firebrick", label="- strand",
+                )
+            ax2.set_title("After RC (target axis flipped)")
+        else:
+            if plus_recs:
+                ax2.scatter(
+                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
+                    [(r.target_start + r.target_end) / 2e6 for r in plus_recs],
+                    s=1, alpha=0.4, color="steelblue", label="+ strand",
+                )
+            if minus_recs:
+                ax2.scatter(
+                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
+                    [(r.target_start + r.target_end) / 2e6 for r in minus_recs],
+                    s=1, alpha=0.4, color="firebrick", label="- strand",
+                )
+            ax2.set_title("As-is (no RC applied)")
+
+        ax2.set_xlabel(f"{mapping.query_name} position (Mb)")
+        ax2.set_ylabel(f"{mapping.target_name} position (Mb)")
+        ax2.legend(markerscale=8, loc="upper left")
+
+        rc_str  = "RC" if needs_rc else "no RC"
+        cov_str = f"{mapping.coverage:.1%}"
+        fig.suptitle(
+            f"{mapping.query_name}  →  {mapping.target_name}   |   "
+            f"decision: {rc_str}   coverage: {cov_str}   "
+            f"+: {mapping.plus_strand_length:,}  −: {mapping.minus_strand_length:,}",
+            fontsize=11, fontweight="bold",
+        )
+        fig.tight_layout()
+        out_path = plots_dir / f"{mapping.query_name}_vs_{mapping.target_name}.png"
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+
+    print(f"  Plots saved to: {plots_dir}")
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -1191,7 +1391,12 @@ def main():
     print(f"\nBuilding chromosome mappings (min coverage: {args.min_coverage:.0%})...")
     mappings = build_chromosome_mappings(filtered_records, args.min_coverage, ref_prefix)
     print(f"  Successfully mapped {len(mappings)} chromosomes")
-    
+
+    # Generate alignment plots if requested
+    if args.plot_alignments:
+        print("\nGenerating alignment scatter plots...")
+        plot_chromosome_alignments(filtered_records, mappings, args.output_dir)
+
     # Print mapping summary
     print_mapping_summary(mappings)
     
