@@ -6,7 +6,7 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
-__version__ = "1.0.3"
+__version__ = "1.1.1"
 
 import argparse
 import gzip
@@ -669,7 +669,8 @@ def build_chromosome_mappings(
         
         # Skip if coverage below threshold
         if coverage < min_coverage:
-            print(f"  Warning: {query_name} -> {best_target} coverage {coverage:.2%} below threshold")
+            if not is_unloc_contig(query_name):
+                print(f"  Warning: {query_name} -> {best_target} coverage {coverage:.2%} below threshold")
             continue
         
         # Determine orientation using Pearson correlation method.
@@ -735,27 +736,6 @@ def build_unloc_mappings(
         unloc_mappings.append(unloc_mapping)
     
     return unloc_mappings
-
-
-def print_unloc_summary(unloc_mappings: List[UnlocMapping]) -> None:
-    """
-    Print summary of unlocalized contig mappings.
-    
-    Args:
-        unloc_mappings: List of UnlocMapping objects
-    """
-    if not unloc_mappings:
-        return
-    
-    print(f"\nUnlocalized contigs: {len(unloc_mappings)}")
-    print("-" * 60)
-    print(f"{'Contig':<25} {'Parent':<15} {'RC?':>5}")
-    print("-" * 60)
-    
-    for m in sorted(unloc_mappings, key=lambda x: (x.parent_chromosome, x.unloc_number)):
-        print(f"{m.contig_name:<25} {m.parent_chromosome:<15} "
-              f"{'Yes' if m.needs_reverse_complement else 'No':>5}")
-
 
 def natural_sort_key(name: str, prefix: str = "SUPER_") -> Tuple:
     """
@@ -1251,6 +1231,8 @@ def plot_chromosome_alignments(
         blocks_index[f"{r.query_name}->{r.target_name}"].append(r)
 
     for mapping in mappings:
+        if is_unloc_contig(mapping.query_name):
+            continue
         key = f"{mapping.query_name}->{mapping.target_name}"
         recs = blocks_index.get(key, [])
         if not recs:
@@ -1412,9 +1394,9 @@ def main():
     if unloc_mappings:
         print(f"  Found {len(unloc_mappings)} unlocalized contigs")
     
-    # Update unloc RC based on resolved assignments
+    # Unloc contigs are never reverse complemented
     for unloc in unloc_mappings:
-        unloc.needs_reverse_complement = rc_lookup.get(unloc.parent_chromosome, False)
+        unloc.needs_reverse_complement = False
     
     # Sort assignments for output
     sorted_assignments = sort_assignments_for_output(assignments)
@@ -1432,8 +1414,6 @@ def main():
         print(f"{a.original_name:<20} {a.new_name:<20} {a.new_suffix:<10} "
               f"{'Yes' if a.needs_reverse_complement else 'No':>5} "
               f"{'Yes' if a.is_sex_chromosome else 'No':>5}")
-    
-    print_unloc_summary(unloc_mappings)
     
     # Generate output files
     fasta_output_path = args.output_dir / f"{args.output_prefix}.fa"
