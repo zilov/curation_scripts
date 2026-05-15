@@ -1246,18 +1246,18 @@ def plot_chromosome_alignments(
         ax = axes[0]
         if plus_recs:
             ax.scatter(
-                [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                 [(r.target_start + r.target_end) / 2e6 for r in plus_recs],
+                [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                 s=1, alpha=0.4, color="steelblue", label="+ strand",
             )
         if minus_recs:
             ax.scatter(
-                [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                 [(r.target_start + r.target_end) / 2e6 for r in minus_recs],
+                [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                 s=1, alpha=0.4, color="firebrick", label="- strand",
             )
-        ax.set_xlabel(f"{mapping.query_name} position (Mb)")
-        ax.set_ylabel(f"{mapping.target_name} position (Mb)")
+        ax.set_xlabel(f"{mapping.target_name} position (Mb)")
+        ax.set_ylabel(f"{mapping.query_name} position (Mb)")
         ax.set_title("All alignment blocks")
         ax.legend(markerscale=8, loc="upper left")
 
@@ -1267,34 +1267,34 @@ def plot_chromosome_alignments(
             # Flip target axis so the signal reads left→right
             if plus_recs:
                 ax2.scatter(
-                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                     [(target_len - (r.target_start + r.target_end) / 2) / 1e6 for r in plus_recs],
+                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                     s=1, alpha=0.4, color="steelblue", label="+ strand",
                 )
             if minus_recs:
                 ax2.scatter(
-                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                     [(target_len - (r.target_start + r.target_end) / 2) / 1e6 for r in minus_recs],
+                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                     s=1, alpha=0.4, color="firebrick", label="- strand",
                 )
             ax2.set_title("After RC (target axis flipped)")
         else:
             if plus_recs:
                 ax2.scatter(
-                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                     [(r.target_start + r.target_end) / 2e6 for r in plus_recs],
+                    [(r.query_start + r.query_end) / 2e6 for r in plus_recs],
                     s=1, alpha=0.4, color="steelblue", label="+ strand",
                 )
             if minus_recs:
                 ax2.scatter(
-                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                     [(r.target_start + r.target_end) / 2e6 for r in minus_recs],
+                    [(r.query_start + r.query_end) / 2e6 for r in minus_recs],
                     s=1, alpha=0.4, color="firebrick", label="- strand",
                 )
             ax2.set_title("As-is (no RC applied)")
 
-        ax2.set_xlabel(f"{mapping.query_name} position (Mb)")
-        ax2.set_ylabel(f"{mapping.target_name} position (Mb)")
+        ax2.set_xlabel(f"{mapping.target_name} position (Mb)")
+        ax2.set_ylabel(f"{mapping.query_name} position (Mb)")
         ax2.legend(markerscale=8, loc="upper left")
 
         rc_str  = "RC" if needs_rc else "no RC"
