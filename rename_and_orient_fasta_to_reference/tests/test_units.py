@@ -600,10 +600,8 @@ class TestUnlocOrderInOutput:
             self._make_unloc("SUPER_1_unloc_2", "SUPER_1", 2),
             self._make_unloc("SUPER_2_unloc_1", "SUPER_2", 1),
         ]
-        rc_lookup = {}
-
         out_fasta = tmp_path / "out.fa"
-        write_fasta(self._sequences(), assignments, unloc_mappings, rc_lookup,
+        write_fasta(self._sequences(), assignments, unloc_mappings,
                     out_fasta, output_prefix="SUPER_")
 
         headers = [line.strip()[1:] for line in out_fasta.read_text().splitlines()
@@ -633,7 +631,7 @@ class TestUnlocOrderInOutput:
         ]
 
         out_fasta = tmp_path / "out.fa"
-        write_fasta(self._sequences(), assignments, unloc_mappings, {},
+        write_fasta(self._sequences(), assignments, unloc_mappings,
                     out_fasta, output_prefix="SUPER_")
 
         headers = [line.strip()[1:] for line in out_fasta.read_text().splitlines()

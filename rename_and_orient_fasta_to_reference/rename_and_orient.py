@@ -15,7 +15,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 def _pearson_r(xs: List[float], ys: List[float]) -> float:
     """
@@ -1063,7 +1063,6 @@ def write_fasta(
     sequences: Dict[str, str],
     assignments: List[FinalChromosomeAssignment],
     unloc_mappings: List[UnlocMapping],
-    rc_lookup: Dict[str, bool],
     output_path: Path,
     output_prefix: str = "SUPER_",
     line_width: int = 60
@@ -1071,18 +1070,17 @@ def write_fasta(
     """
     Write FASTA file with renamed chromosomes and reverse complement where needed.
     
+    Orientation is taken from a.needs_reverse_complement (chromosomes) and
+    unloc.needs_reverse_complement (unlocalized contigs).
+
     Args:
         sequences: Original sequences dictionary
         assignments: List of FinalChromosomeAssignment (sorted for output)
         unloc_mappings: List of UnlocMapping for unloc contigs
-        rc_lookup: Dictionary mapping original names to needs_reverse_complement
         output_path: Path to output FASTA file
         output_prefix: Prefix for output chromosome names
         line_width: Line width for sequence output (default 60)
     """
-    # Build lookup: original_name -> new_name
-    name_lookup = {a.original_name: a.new_name for a in assignments}
-    
     # Build unloc parent lookup: parent_chr_original -> parent_chr_new_suffix
     parent_suffix_lookup = {a.original_name: a.new_suffix for a in assignments}
     
@@ -1225,7 +1223,6 @@ def plot_chromosome_alignments(
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     # Index records by query→target
-    from collections import defaultdict
     blocks_index: Dict[str, List[PAFRecord]] = defaultdict(list)
     for r in records:
         blocks_index[f"{r.query_name}->{r.target_name}"].append(r)
@@ -1420,7 +1417,7 @@ def main():
     csv_output_path = args.output_dir / f"{args.output_prefix}.chromosome.list.csv"
     
     print("\nWriting output files...")
-    write_fasta(sequences, sorted_assignments, unloc_mappings, rc_lookup, 
+    write_fasta(sequences, sorted_assignments, unloc_mappings,
                 fasta_output_path, output_chromosome_prefix)
     write_chromosome_list(sorted_assignments, unloc_mappings, csv_output_path, output_chromosome_prefix)
     
