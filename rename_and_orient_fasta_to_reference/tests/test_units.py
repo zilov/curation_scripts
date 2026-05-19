@@ -19,6 +19,7 @@ from rename_and_orient import (
     detect_reference_prefix,
     merge_intervals,
     calculate_target_alignments,
+    load_mapping_table_assignments,
     PAFRecord,
     ChromosomeMapping,
     FinalChromosomeAssignment,
@@ -676,3 +677,109 @@ class TestUnlocOrderInOutput:
         assert names == expected_order, (
             f"Unexpected CSV order.\nGot:      {names}\nExpected: {expected_order}"
         )
+
+
+class TestLoadMappingTable:
+    """Tests for load_mapping_table_assignments (--mapping-table mode)."""
+
+    HEADER = "query\ttarget\trenamed_to\tquery_length\talignment_length\tcoverage\tplus_strand\tminus_strand\tneeds_reverse_complement\n"
+
+    def _write_table(self, tmp_path, rows: list[str]) -> Path:
+        p = tmp_path / "mapping.tsv"
+        p.write_text(self.HEADER + "".join(rows))
+        return p
+
+    # ------------------------------------------------------------------ basic
+
+    def test_basic_rename_and_rc(self, tmp_path):
+        """Chromosomes are renamed and RC flag applied from the table."""
+        table = self._write_table(tmp_path, [
+            "SUPER_9\tchr_1\tSUPER_1\t1000\t900\t0.9\t100\t800\tyes\n",
+            "SUPER_3\tchr_2\tSUPER_2\t1000\t900\t0.9\t800\t100\tno\n",
+        ])
+        sequences = {"SUPER_9": "A" * 100, "SUPER_3": "T" * 100}
+        assignments, unloc_mappings = load_mapping_table_assignments(
+            table, sequences, query_chromosome_prefix="SUPER_", output_prefix="SUPER_"
+        )
+        by_orig = {a.original_name: a for a in assignments}
+        assert by_orig["SUPER_9"].new_name == "SUPER_1"
+        assert by_orig["SUPER_9"].needs_reverse_complement is True
+        assert by_orig["SUPER_3"].new_name == "SUPER_2"
+        assert by_orig["SUPER_3"].needs_reverse_complement is False
+        assert unloc_mappings == []
+
+    def test_sex_chromosome_detected(self, tmp_path):
+        """Sex chromosome suffix is correctly detected from renamed_to."""
+        table = self._write_table(tmp_path, [
+            "SUPER_X\tchr_X\tSUPER_X\t500\t450\t0.9\t100\t350\tyes\n",
+        ])
+        sequences = {"SUPER_X": "N" * 50}
+        assignments, _ = load_mapping_table_assignments(table, sequences)
+        assert assignments[0].is_sex_chromosome is True
+        assert assignments[0].new_suffix == "X"
+
+    def test_unloc_in_fasta_mapped_via_parent(self, tmp_path):
+        """Unloc contigs unique to haplotype 2 are mapped via their parent."""
+        table = self._write_table(tmp_path, [
+            "SUPER_5\tchr_1\tSUPER_1\t1000\t900\t0.9\t800\t100\tno\n",
+        ])
+        # haplotype 2 has an extra unloc not present in haplotype 1's table
+        sequences = {"SUPER_5": "A" * 100, "SUPER_5_unloc_1": "T" * 50}
+        assignments, unloc_mappings = load_mapping_table_assignments(
+            table, sequences, query_chromosome_prefix="SUPER_", output_prefix="SUPER_"
+        )
+        assert len(unloc_mappings) == 1
+        u = unloc_mappings[0]
+        assert u.contig_name == "SUPER_5_unloc_1"
+        assert u.parent_chromosome == "SUPER_5"
+        assert u.unloc_number == 1
+        assert u.needs_reverse_complement is False  # unlocs never RC'd
+
+    def test_unloc_never_reverse_complemented(self, tmp_path):
+        """Even when parent is RC'd, unloc itself must not be."""
+        table = self._write_table(tmp_path, [
+            "SUPER_2\tchr_1\tSUPER_1\t1000\t900\t0.9\t100\t800\tyes\n",
+        ])
+        sequences = {"SUPER_2": "A" * 100, "SUPER_2_unloc_1": "T" * 50}
+        _, unloc_mappings = load_mapping_table_assignments(
+            table, sequences, query_chromosome_prefix="SUPER_", output_prefix="SUPER_"
+        )
+        assert unloc_mappings[0].needs_reverse_complement is False
+
+    def test_chr_not_in_table_kept_with_warning(self, tmp_path, capsys):
+        """Chromosome missing from table keeps its original suffix, RC=False."""
+        table = self._write_table(tmp_path, [
+            "SUPER_1\tchr_1\tSUPER_1\t1000\t900\t0.9\t800\t100\tno\n",
+        ])
+        sequences = {"SUPER_1": "A" * 100, "SUPER_99": "C" * 100}
+        assignments, _ = load_mapping_table_assignments(table, sequences)
+        by_orig = {a.original_name: a for a in assignments}
+        assert by_orig["SUPER_99"].new_name == "SUPER_99"
+        assert by_orig["SUPER_99"].needs_reverse_complement is False
+        assert "Warning" in capsys.readouterr().out
+
+    def test_missing_column_raises(self, tmp_path):
+        """ValueError raised when a required column is missing."""
+        bad = tmp_path / "bad.tsv"
+        bad.write_text("query\ttarget\tquery_length\n"
+                       "SUPER_1\tchr_1\t1000\n")
+        with pytest.raises(ValueError, match="missing columns"):
+            load_mapping_table_assignments(bad, {"SUPER_1": "A"})
+
+    def test_empty_table_raises(self, tmp_path):
+        """ValueError raised when table has header but no data rows."""
+        table = tmp_path / "empty.tsv"
+        table.write_text(self.HEADER)
+        with pytest.raises(ValueError, match="empty"):
+            load_mapping_table_assignments(table, {"SUPER_1": "A"})
+
+    def test_output_prefix_applied(self, tmp_path):
+        """output_prefix is applied to new chromosome names."""
+        table = self._write_table(tmp_path, [
+            "SUPER_3\tchr_1\tSUPER_1\t1000\t900\t0.9\t800\t100\tno\n",
+        ])
+        sequences = {"SUPER_3": "A" * 100}
+        assignments, _ = load_mapping_table_assignments(
+            table, sequences, query_chromosome_prefix="SUPER_", output_prefix="chr_"
+        )
+        assert assignments[0].new_name == "chr_1"
