@@ -125,11 +125,22 @@ def parse_args() -> argparse.Namespace:
         help="Input FASTA file (can be gzipped)"
     )
     
-    parser.add_argument(
+    # Alignment source: either a PAF file or a pre-built mapping table
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--paf", "-p",
-        required=True,
         type=Path,
+        default=None,
         help="PAF file with alignment to reference"
+    )
+    source_group.add_argument(
+        "--mapping-table", "-mt",
+        type=Path,
+        default=None,
+        dest="mapping_table",
+        help="Pre-built mapping TSV (output of a previous run) to rename/orient a second "
+             "haplotype without re-running alignment. Columns used: query, renamed_to, "
+             "needs_reverse_complement."
     )
     
     parser.add_argument(
@@ -1313,96 +1324,93 @@ def plot_chromosome_alignments(
     print(f"  Plots saved to: {plots_dir}")
 
 
-def main():
-    """Main entry point."""
-    args = parse_args()
-    
-    query_chromosome_prefix = args.query_chromosome_prefix
-    output_chromosome_prefix = args.output_chromosome_prefix
-    
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Validate inputs
-    if not args.fasta.exists():
-        print(f"Error: FASTA file not found: {args.fasta}", file=sys.stderr)
-        sys.exit(1)
-        
-    if not args.paf.exists():
-        print(f"Error: PAF file not found: {args.paf}", file=sys.stderr)
-        sys.exit(1)
-    
-    print(f"Reading FASTA file: {args.fasta}")
-    sequences = read_fasta(args.fasta)
-    print(f"  Found {len(sequences)} sequences")
-    
-    print(f"Parsing PAF file: {args.paf}")
-    paf_records = parse_paf(args.paf)
-    print(f"  Found {len(paf_records)} alignment records")
-    
-    # Filter records (auto-detect reference prefix or use provided)
-    ref_prefix_arg = args.reference_chromosome_prefix
-    filtered_records, ref_prefix = filter_paf_records(paf_records, query_chromosome_prefix, ref_prefix_arg)
-    if ref_prefix_arg:
-        print(f"  Reference prefix (provided): '{ref_prefix}'")
-    else:
-        print(f"  Reference prefix (auto-detected): '{ref_prefix}'")
-    print(f"  After filtering ({query_chromosome_prefix}* -> {ref_prefix}*): {len(filtered_records)} records")
-    
-    # Validate PAF/FASTA consistency
-    print("\nValidating PAF/FASTA consistency...")
-    is_valid, in_paf_not_fasta, in_fasta_not_paf = validate_paf_fasta_consistency(
-        paf_records, sequences, query_chromosome_prefix
-    )
-    
-    if in_paf_not_fasta:
-        print(f"  WARNING: Chromosomes in PAF but NOT in FASTA: {', '.join(in_paf_not_fasta)}")
-        print(f"           These may indicate wrong PAF or FASTA file!")
-    
-    if in_fasta_not_paf:
-        print(f"  WARNING: Chromosomes in FASTA but NOT in PAF: {', '.join(in_fasta_not_paf)}")
-        print(f"           These will keep original suffix (no alignment data).")
-    
-    if is_valid:
-        print(f"  OK: All {query_chromosome_prefix}* chromosomes match between PAF and FASTA")
-    
-    # Build chromosome mappings
-    print(f"\nBuilding chromosome mappings (min coverage: {args.min_coverage:.0%})...")
-    mappings = build_chromosome_mappings(filtered_records, args.min_coverage, ref_prefix)
-    print(f"  Successfully mapped {len(mappings)} chromosomes")
+def load_mapping_table_assignments(
+    mapping_table_path: Path,
+    sequences: Dict[str, str],
+    query_chromosome_prefix: str = "SUPER_",
+    output_prefix: str = "SUPER_",
+) -> Tuple[List[FinalChromosomeAssignment], List[UnlocMapping]]:
+    """
+    Build assignments and unloc mappings from a pre-built mapping TSV
+    (produced by a previous run on haplotype 1). Columns used: query,
+    renamed_to, needs_reverse_complement. Unlocs present only in this
+    haplotype are mapped via their parent chromosome; they are never RC'd.
+    """
+    # Parse table: query -> {renamed_to, needs_rc}
+    table_map: Dict[str, Dict] = {}
+    with open(mapping_table_path) as fh:
+        header = None
+        for line in fh:
+            fields = line.rstrip("\n").split("\t")
+            if header is None:
+                header = fields
+                missing = {"query", "renamed_to", "needs_reverse_complement"} - set(header)
+                if missing:
+                    raise ValueError(f"Mapping table missing columns: {', '.join(sorted(missing))}")
+                continue
+            row = dict(zip(header, fields))
+            table_map[row["query"]] = {
+                "renamed_to": row["renamed_to"],
+                "needs_rc": row["needs_reverse_complement"].strip().lower() == "yes",
+            }
+    if not table_map:
+        raise ValueError(f"Mapping table {mapping_table_path} is empty.")
+    print(f"  Loaded {len(table_map)} entries from mapping table")
 
-    # Generate alignment plots if requested
-    if args.plot_alignments:
-        print("\nGenerating alignment scatter plots...")
-        plot_chromosome_alignments(filtered_records, mappings, args.output_dir)
+    def _suffix_from_renamed(renamed_to: str) -> str:
+        """Extract the bare chromosomal suffix (e.g. '1', 'X') from renamed_to
+        regardless of which prefix was used in the original run."""
+        m = re.search(r'([A-Z]\d*|\d+)$', renamed_to, re.IGNORECASE)
+        return m.group(1) if m else renamed_to
 
-    # Print mapping summary
-    print_mapping_summary(mappings)
-    
-    # Resolve chromosome assignments with conflict handling
-    print("\nResolving chromosome assignments...")
-    print(f"  Input prefix: '{query_chromosome_prefix}' -> Output prefix: '{output_chromosome_prefix}'")
-    assignments, rc_lookup = resolve_chromosome_assignments(
-        mappings, sequences, query_chromosome_prefix, output_chromosome_prefix
-    )
-    
-    # Build unloc mappings (based on parent chromosome orientation from rc_lookup)
-    unloc_mappings = build_unloc_mappings(sequences, mappings)
-    if unloc_mappings:
-        print(f"  Found {len(unloc_mappings)} unlocalized contigs")
-    
-    # Unloc contigs are never reverse complemented
-    for unloc in unloc_mappings:
-        unloc.needs_reverse_complement = False
-    
-    # Sort assignments for output
-    sorted_assignments = sort_assignments_for_output(assignments)
-    
-    # Save mapping summary to TSV (after assignments are ready)
-    mapping_tsv_path = args.output_dir / f"{args.output_prefix}.mapping.tsv"
-    save_mapping_tsv(mappings, sorted_assignments, mapping_tsv_path)
-    
-    # Print final assignment summary
+    # parent query name -> new suffix (main chrs only, for unloc naming)
+    parent_new_suffix = {
+        q: _suffix_from_renamed(info["renamed_to"])
+        for q, info in table_map.items() if not is_unloc_contig(q)
+    }
+
+    # Build assignments for main chromosomes in FASTA
+    assignments: List[FinalChromosomeAssignment] = []
+    for orig in (n for n in sequences if n.startswith(query_chromosome_prefix) and not is_unloc_contig(n)):
+        if orig not in table_map:
+            suffix = extract_chromosome_suffix(orig, query_chromosome_prefix)
+            print(f"  Warning: {orig} not in mapping table — keeping original suffix")
+        else:
+            suffix = _suffix_from_renamed(table_map[orig]["renamed_to"])
+        needs_rc = table_map[orig]["needs_rc"] if orig in table_map else False
+        assignments.append(FinalChromosomeAssignment(
+            original_name=orig,
+            new_name=f"{output_prefix}{suffix}",
+            new_suffix=suffix,
+            needs_reverse_complement=needs_rc,
+            is_sex_chromosome=is_sex_chromosome_suffix(suffix),
+        ))
+
+    # Build unloc mappings (never RC'd)
+    unloc_mappings: List[UnlocMapping] = []
+    for contig in (n for n in sequences if n.startswith(query_chromosome_prefix) and is_unloc_contig(n)):
+        parent, unloc_num = parse_unloc_name(contig)
+        if parent not in parent_new_suffix:
+            print(f"  Warning: parent '{parent}' for '{contig}' not in mapping table — skipping")
+            continue
+        unloc_mappings.append(UnlocMapping(
+            contig_name=contig, parent_chromosome=parent,
+            unloc_number=unloc_num, needs_reverse_complement=False,
+        ))
+
+    print(f"  Built {len(assignments)} assignments and {len(unloc_mappings)} unloc mappings")
+    return assignments, unloc_mappings
+
+
+def _write_and_validate(
+    args: argparse.Namespace,
+    sequences: Dict[str, str],
+    sorted_assignments: List[FinalChromosomeAssignment],
+    unloc_mappings: List[UnlocMapping],
+    output_chromosome_prefix: str,
+    mapping_tsv_path: Path = None,
+) -> None:
+    """Print assignment table, write FASTA + CSV, validate genome length."""
     print("\nFinal chromosome assignments:")
     print("-" * 70)
     print(f"{'Original':<20} {'New Name':<20} {'Suffix':<10} {'RC?':>5} {'Sex?':>5}")
@@ -1411,32 +1419,108 @@ def main():
         print(f"{a.original_name:<20} {a.new_name:<20} {a.new_suffix:<10} "
               f"{'Yes' if a.needs_reverse_complement else 'No':>5} "
               f"{'Yes' if a.is_sex_chromosome else 'No':>5}")
-    
-    # Generate output files
-    fasta_output_path = args.output_dir / f"{args.output_prefix}.fa"
-    csv_output_path = args.output_dir / f"{args.output_prefix}.chromosome.list.csv"
-    
+
+    fasta_out = args.output_dir / f"{args.output_prefix}.fa"
+    csv_out   = args.output_dir / f"{args.output_prefix}.chromosome.list.csv"
+
     print("\nWriting output files...")
-    write_fasta(sequences, sorted_assignments, unloc_mappings,
-                fasta_output_path, output_chromosome_prefix)
-    write_chromosome_list(sorted_assignments, unloc_mappings, csv_output_path, output_chromosome_prefix)
-    
-    # Validate genome length consistency
+    write_fasta(sequences, sorted_assignments, unloc_mappings, fasta_out, output_chromosome_prefix)
+    write_chromosome_list(sorted_assignments, unloc_mappings, csv_out, output_chromosome_prefix)
+
     print("\nValidating genome length...")
-    input_length = sum(len(seq) for seq in sequences.values())
-    output_length = calculate_genome_length(fasta_output_path)
-    
-    if input_length == output_length:
-        print(f"  OK: Genome length matches ({input_length:,} bp)")
+    in_len  = sum(len(s) for s in sequences.values())
+    out_len = calculate_genome_length(fasta_out)
+    if in_len == out_len:
+        print(f"  OK: Genome length matches ({in_len:,} bp)")
     else:
-        print(f"  ERROR: Genome length mismatch! Input: {input_length:,} bp, Output: {output_length:,} bp")
-        print("         This indicates a bug in sequence processing! Contact the developer to fix it.", file=sys.stderr)
+        print(f"  ERROR: Genome length mismatch! Input: {in_len:,} bp, Output: {out_len:,} bp", file=sys.stderr)
         sys.exit(1)
-    
+
     print(f"\nDone! Output files:")
-    print(f"  - FASTA: {fasta_output_path}")
-    print(f"  - Chromosome list: {csv_output_path}")
-    print(f"  - Mapping summary: {mapping_tsv_path}")
+    print(f"  - FASTA: {fasta_out}")
+    print(f"  - Chromosome list: {csv_out}")
+    if mapping_tsv_path:
+        print(f"  - Mapping summary: {mapping_tsv_path}")
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+
+    qpfx = args.query_chromosome_prefix
+    opfx = args.output_chromosome_prefix
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not args.fasta.exists():
+        print(f"Error: FASTA file not found: {args.fasta}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Reading FASTA file: {args.fasta}")
+    sequences = read_fasta(args.fasta)
+    print(f"  Found {len(sequences)} sequences")
+
+    # --- Mode A: mapping table (second haplotype, no alignment needed) ---
+    if args.mapping_table is not None:
+        if not args.mapping_table.exists():
+            print(f"Error: Mapping table not found: {args.mapping_table}", file=sys.stderr)
+            sys.exit(1)
+        print(f"\nUsing pre-built mapping table: {args.mapping_table}")
+        print(f"  Input prefix: '{qpfx}' -> Output prefix: '{opfx}'")
+        assignments, unloc_mappings = load_mapping_table_assignments(
+            args.mapping_table, sequences, qpfx, opfx
+        )
+        _write_and_validate(args, sequences, sort_assignments_for_output(assignments),
+                            unloc_mappings, opfx)
+        return
+
+    # --- Mode B: full PAF-based alignment ---
+    print(f"Parsing PAF file: {args.paf}")
+    paf_records = parse_paf(args.paf)
+    print(f"  Found {len(paf_records)} alignment records")
+
+    ref_prefix_arg = args.reference_chromosome_prefix
+    filtered_records, ref_prefix = filter_paf_records(paf_records, qpfx, ref_prefix_arg)
+    label = "provided" if ref_prefix_arg else "auto-detected"
+    print(f"  Reference prefix ({label}): '{ref_prefix}'")
+    print(f"  After filtering ({qpfx}* -> {ref_prefix}*): {len(filtered_records)} records")
+
+    print("\nValidating PAF/FASTA consistency...")
+    is_valid, in_paf_not_fasta, in_fasta_not_paf = validate_paf_fasta_consistency(
+        paf_records, sequences, qpfx
+    )
+    if in_paf_not_fasta:
+        print(f"  WARNING: In PAF but not FASTA: {', '.join(in_paf_not_fasta)}")
+    if in_fasta_not_paf:
+        print(f"  WARNING: In FASTA but not PAF: {', '.join(in_fasta_not_paf)} (will keep original suffix)")
+    if is_valid:
+        print(f"  OK: All {qpfx}* chromosomes match")
+
+    print(f"\nBuilding chromosome mappings (min coverage: {args.min_coverage:.0%})...")
+    mappings = build_chromosome_mappings(filtered_records, args.min_coverage, ref_prefix)
+    print(f"  Successfully mapped {len(mappings)} chromosomes")
+
+    if args.plot_alignments:
+        print("\nGenerating alignment scatter plots...")
+        plot_chromosome_alignments(filtered_records, mappings, args.output_dir)
+
+    print_mapping_summary(mappings)
+
+    print("\nResolving chromosome assignments...")
+    print(f"  Input prefix: '{qpfx}' -> Output prefix: '{opfx}'")
+    assignments, _ = resolve_chromosome_assignments(mappings, sequences, qpfx, opfx)
+
+    unloc_mappings = build_unloc_mappings(sequences, mappings)
+    if unloc_mappings:
+        print(f"  Found {len(unloc_mappings)} unlocalized contigs")
+    for unloc in unloc_mappings:
+        unloc.needs_reverse_complement = False
+
+    sorted_assignments = sort_assignments_for_output(assignments)
+    mapping_tsv_path = args.output_dir / f"{args.output_prefix}.mapping.tsv"
+    save_mapping_tsv(mappings, sorted_assignments, mapping_tsv_path)
+
+    _write_and_validate(args, sequences, sorted_assignments, unloc_mappings, opfx, mapping_tsv_path)
 
 
 if __name__ == "__main__":
