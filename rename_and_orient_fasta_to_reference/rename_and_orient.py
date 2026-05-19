@@ -1465,6 +1465,13 @@ def main():
         if not args.mapping_table.exists():
             print(f"Error: Mapping table not found: {args.mapping_table}", file=sys.stderr)
             sys.exit(1)
+        # Warn about PAF-only options that have no effect in this mode
+        if args.min_coverage != 0.5:
+            print("  Warning: --min-coverage is ignored in --mapping-table mode", file=sys.stderr)
+        if args.plot_alignments:
+            print("  Warning: --plot-alignments is ignored in --mapping-table mode", file=sys.stderr)
+        if args.reference_chromosome_prefix is not None:
+            print("  Warning: --reference-chromosome-prefix is ignored in --mapping-table mode", file=sys.stderr)
         print(f"\nUsing pre-built mapping table: {args.mapping_table}")
         print(f"  Input prefix: '{qpfx}' -> Output prefix: '{opfx}'")
         assignments, unloc_mappings = load_mapping_table_assignments(
