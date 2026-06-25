@@ -9,6 +9,8 @@ from rename_and_orient import (
     build_chromosome_mappings,
     reverse_complement,
     extract_chromosome_suffix,
+    strip_hap_suffix,
+    is_hap_contig,
     write_fasta,
     write_chromosome_list,
     build_unloc_mappings,
@@ -185,11 +187,33 @@ class TestChromosomeSuffixFunctions:
         ("chr_W", "chr_", "W"),
         ("scaffold_10", "scaffold_", "10"),
         ("chrZ1", "chr", "Z1"),
+        # HAP suffix is preserved by extract_chromosome_suffix (stripping is for classification only)
+        ("SUPER_1_HAP1", "SUPER_", "1_HAP1"),
+        ("SUPER_W_HAP2", "SUPER_", "W_HAP2"),
     ])
     def test_extract_chromosome_suffix(self, name, prefix, expected):
         """Test extract_chromosome_suffix with various inputs."""
         result = extract_chromosome_suffix(name, prefix)
         assert result == expected
+
+    @pytest.mark.parametrize("name,expected", [
+        ("SUPER_1_HAP1", "SUPER_1"),
+        ("SUPER_W_HAP2", "SUPER_W"),
+        ("SUPER_1", "SUPER_1"),
+        ("1_HAP1", "1"),
+        ("W_HAP2", "W"),
+    ])
+    def test_strip_hap_suffix(self, name, expected):
+        assert strip_hap_suffix(name) == expected
+
+    @pytest.mark.parametrize("name,expected", [
+        ("SUPER_1_HAP1", True),
+        ("SUPER_W_HAP2", True),
+        ("SUPER_1", False),
+        ("SUPER_1_unloc_1", False),
+    ])
+    def test_is_hap_contig(self, name, expected):
+        assert is_hap_contig(name) == expected
 
     @pytest.mark.parametrize("suffix,expected", [
         ("W", True),
@@ -201,6 +225,10 @@ class TestChromosomeSuffixFunctions:
         ("1", False),
         ("10", False),
         ("ABC", False),
+        # HAP-carrying suffixes (as returned by extract_chromosome_suffix)
+        ("W_HAP1", True),
+        ("Z1_HAP2", True),
+        ("1_HAP1", False),
     ])
     def test_is_sex_chromosome_suffix(self, suffix, expected):
         """Test is_sex_chromosome_suffix."""
@@ -214,6 +242,10 @@ class TestChromosomeSuffixFunctions:
         ("W", False),
         ("Z1", False),
         ("ABC", False),
+        # HAP-carrying suffixes (as returned by extract_chromosome_suffix)
+        ("1_HAP1", True),
+        ("10_HAP2", True),
+        ("W_HAP1", False),
     ])
     def test_is_autosome_suffix(self, suffix, expected):
         """Test is_autosome_suffix."""
@@ -296,6 +328,52 @@ class TestResolveChromosomeAssignments:
         super_w = next(a for a in assignments if a.original_name == "SUPER_W")
         assert super_w.new_name == "SUPER_W"  # Keeps original suffix
         assert super_w.is_sex_chromosome
+
+    def test_resolve_hap_autosomes(self):
+        """HAP-suffixed autosomes are renamed correctly; _HAPJ is preserved in new_name."""
+        fasta = {
+            "SUPER_1_HAP2": "ATCGATCG",
+            "SUPER_2_HAP2": "GCTAGCTA",
+        }
+        mappings = [
+            ChromosomeMapping("SUPER_1_HAP2", 8, "chr_1", 8, 1.0, 8, 0, False, "chr_"),
+            ChromosomeMapping("SUPER_2_HAP2", 8, "chr_2", 8, 1.0, 0, 8, True, "chr_"),
+        ]
+
+        assignments, rc_lookup = resolve_chromosome_assignments(
+            mappings, fasta, "SUPER_", "SUPER_"
+        )
+
+        a1 = next(a for a in assignments if a.original_name == "SUPER_1_HAP2")
+        assert a1.new_name == "SUPER_1_HAP2"
+        assert a1.new_suffix == "1"  # bare for sorting
+        assert not a1.is_sex_chromosome
+        assert not a1.needs_reverse_complement
+
+        a2 = next(a for a in assignments if a.original_name == "SUPER_2_HAP2")
+        assert a2.new_name == "SUPER_2_HAP2"
+        assert a2.new_suffix == "2"
+        assert a2.needs_reverse_complement
+
+    def test_resolve_hap_sex_chromosome(self):
+        """HAP-suffixed sex chromosomes are classified correctly; new_suffix is bare."""
+        fasta = {
+            "SUPER_W_HAP2": "NNNNAAAA",
+            "SUPER_1_HAP2": "ATCGATCG",
+        }
+        mappings = [
+            ChromosomeMapping("SUPER_W_HAP2", 8, "chr_W", 8, 1.0, 8, 0, False, "chr_"),
+            ChromosomeMapping("SUPER_1_HAP2", 8, "chr_1", 8, 1.0, 8, 0, False, "chr_"),
+        ]
+
+        assignments, rc_lookup = resolve_chromosome_assignments(
+            mappings, fasta, "SUPER_", "SUPER_"
+        )
+
+        w = next(a for a in assignments if a.original_name == "SUPER_W_HAP2")
+        assert w.new_name == "SUPER_W_HAP2"
+        assert w.new_suffix == "W"   # bare for sorting/unloc
+        assert w.is_sex_chromosome
 
 
 class TestDetectReferencePrefix:

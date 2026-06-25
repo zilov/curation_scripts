@@ -6,7 +6,7 @@ This script renames chromosomes in a FASTA file and changes their orientation
 based on alignment to a reference genome.
 """
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 import argparse
 import gzip
@@ -454,16 +454,17 @@ def is_sex_chromosome_suffix(suffix: str) -> bool:
     Returns:
         True if this is a sex chromosome suffix
     """
+    suffix = strip_hap_suffix(suffix)
     if not suffix:
         return False
-    
+
     # Check if the first character is a known sex chromosome letter
     first_char = suffix[0].upper()
     if first_char in SEX_CHROMOSOME_SUFFIXES:
         # Remaining characters should be digits or empty (W, Z, Z1, Z2, etc.)
         remaining = suffix[1:]
         return remaining == '' or remaining.isdigit()
-    
+
     return False
 
 
@@ -486,25 +487,38 @@ def extract_chromosome_suffix(name: str, prefix: str = "SUPER_") -> str:
 def is_autosome_suffix(suffix: str) -> bool:
     """
     Check if suffix represents an autosome (purely numeric).
-    
+
     Args:
         suffix: Chromosome suffix
-        
+
     Returns:
         True if this is an autosome suffix (numeric)
     """
-    return suffix.isdigit()
+    return strip_hap_suffix(suffix).isdigit()
     
+
+_HAP_SUFFIX_RE = re.compile(r'_HAP\d+$', re.IGNORECASE)
+
+
+def strip_hap_suffix(name: str) -> str:
+    """Strip _HAPJ suffix from a scaffold name (e.g. SUPER_1_HAP1 -> SUPER_1)."""
+    return _HAP_SUFFIX_RE.sub('', name)
+
+
+def is_hap_contig(name: str) -> bool:
+    """Return True if name carries a _HAPJ suffix produced by pretext-to-asm."""
+    return bool(_HAP_SUFFIX_RE.search(name))
+
 
 def is_unloc_contig(name: str) -> bool:
     """
     Check if sequence name is an unlocalized contig.
-    
+
     Unloc contigs have format: SUPER_N_unloc_M
-    
+
     Args:
         name: Sequence name
-        
+
     Returns:
         True if name matches unloc pattern
     """
@@ -916,8 +930,8 @@ def resolve_chromosome_assignments(
     for name in unmapped_names:
         suffix = extract_chromosome_suffix(name, query_chromosome_prefix)
         if is_autosome_suffix(suffix):
-            reserved_numbers.add(int(suffix))
-            print(f"  Reserved: number {suffix} (unmapped {name} keeps original name)")
+            reserved_numbers.add(int(strip_hap_suffix(suffix)))
+            print(f"  Reserved: number {strip_hap_suffix(suffix)} (unmapped {name} keeps original name)")
     
     # Track which target numbers are reserved by sex chromosomes in reference
     # (when sex -> autosome, we skip that autosome number)
@@ -936,8 +950,8 @@ def resolve_chromosome_assignments(
         
         assignment = FinalChromosomeAssignment(
             original_name=m.query_name,
-            new_name=f"{output_prefix}{query_suffix}",  # Keep original suffix
-            new_suffix=query_suffix,
+            new_name=f"{output_prefix}{query_suffix}",  # keeps _HAPJ if present
+            new_suffix=strip_hap_suffix(query_suffix),  # bare suffix for sorting/unloc
             needs_reverse_complement=m.needs_reverse_complement,
             is_sex_chromosome=True
         )
@@ -1019,23 +1033,26 @@ def resolve_chromosome_assignments(
     
     # Create final assignments for autosomes
     for m, num in autosome_assignments:
+        hap_match = _HAP_SUFFIX_RE.search(m.query_name)
+        hap_str = hap_match.group(0) if hap_match else ""
         assignment = FinalChromosomeAssignment(
             original_name=m.query_name,
-            new_name=f"{output_prefix}{num}",
+            new_name=f"{output_prefix}{num}{hap_str}",
             new_suffix=str(num),
             needs_reverse_complement=m.needs_reverse_complement,
             is_sex_chromosome=False
         )
         assignments.append(assignment)
         rc_lookup[m.query_name] = m.needs_reverse_complement
-    
+
     # Handle unmapped chromosomes - they keep original suffix with new prefix
     for name in unmapped_names:
         suffix = extract_chromosome_suffix(name, query_chromosome_prefix)
+        bare_suffix = strip_hap_suffix(suffix)
         assignment = FinalChromosomeAssignment(
             original_name=name,
             new_name=f"{output_prefix}{suffix}",
-            new_suffix=suffix,
+            new_suffix=bare_suffix,
             needs_reverse_complement=False,
             is_sex_chromosome=is_sex_chromosome_suffix(suffix)
         )
