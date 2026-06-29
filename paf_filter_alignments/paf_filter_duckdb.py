@@ -194,8 +194,11 @@ def _stats(con: duckdb.DuckDBPyConnection, total: int) -> tuple:
 def print_stats(con: duckdb.DuckDBPyConnection, label: str, total: int) -> None:
     n, mn, med, mx = _stats(con, total)
     pct = 100.0 * n / total if total else 0.0
-    print(f"  [{label}] {n:>9,} records kept ({pct:.1f}%) "
-          f"| query-block — min:{mn:,}  median:{med:,}  max:{mx:,}")
+    if n == 0:
+        print(f"  [{label}]         0 records kept (0.0%) | (empty)")
+    else:
+        print(f"  [{label}] {n:>9,} records kept ({pct:.1f}%) "
+              f"| query-block — min:{mn:,}  median:{med:,}  max:{mx:,}")
 
 
 def write_output(con: duckdb.DuckDBPyConnection, path: Path, batch_size: int = 50_000) -> None:
