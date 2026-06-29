@@ -76,28 +76,27 @@ def _col(i: int, n_cols: int) -> str:
     return f"column{i:0{width}d}"
 
 
-def load_paf(con: duckdb.DuckDBPyConnection, path: Path) -> int:
+def load_and_filter_scalars(
+    con: duckdb.DuckDBPyConnection,
+    path: Path,
+    args: argparse.Namespace,
+) -> tuple[int, int]:
     """
-    Load PAF into DuckDB. All columns kept as VARCHAR to preserve optional
-    tags (dv:f:, cg:Z:, etc.) verbatim. Returns total record count.
+    Stream PAF file through DuckDB, applying scalar filters on the fly so only
+    passing rows are materialised. This keeps memory proportional to the output,
+    not the (potentially multi-GB) input.
+
+    Returns (total_input_records, filtered_record_count).
     """
     n_cols = _detect_n_cols(path)
     c = [_col(i, n_cols) for i in range(n_cols)]
-
-    con.execute(f"""
-        CREATE TABLE paf_raw AS
-        SELECT * FROM read_csv(
-            '{path}',
-            sep         = '\t',
-            header      = false,
-            all_varchar = true
-        )
-    """)
-
     raw_line_expr = "concat_ws('\t', " + ", ".join(c) + ")"
 
+    # Inline view alias so we can use computed aliases in WHERE
+    scalar_where = _build_where(args)
+
     con.execute(f"""
-        CREATE VIEW paf AS
+        CREATE TABLE filtered AS
         SELECT
             {c[0]}                        AS query_name,
             {c[1]}::INT                   AS query_length,
@@ -114,10 +113,18 @@ def load_paf(con: duckdb.DuckDBPyConnection, path: Path) -> int:
             {c[3]}::INT - {c[2]}::INT     AS query_block_len,
             {c[8]}::INT - {c[7]}::INT     AS target_block_len,
             {raw_line_expr}               AS raw_line
-        FROM paf_raw
+        FROM read_csv('{path}', sep='\t', header=false, all_varchar=true)
+        WHERE {scalar_where}
     """)
 
-    return con.execute("SELECT COUNT(*) FROM paf").fetchone()[0]
+    n_filtered = con.execute("SELECT COUNT(*) FROM filtered").fetchone()[0]
+
+    # Count total separately with a second streaming pass (cheap — no materialisation)
+    n_total = con.execute(f"""
+        SELECT COUNT(*) FROM read_csv('{path}', sep='\t', header=false, all_varchar=true)
+    """).fetchone()[0]
+
+    return n_total, n_filtered
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +147,6 @@ def _build_where(args: argparse.Namespace) -> str:
     return " AND ".join(conditions) if conditions else "TRUE"
 
 
-def apply_scalar_filters(con: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> None:
-    where = _build_where(args)
-    con.execute(f"CREATE TABLE filtered AS SELECT * FROM paf WHERE {where}")
 
 
 def apply_nested_filter(con: duckdb.DuckDBPyConnection, side: str) -> None:
@@ -194,12 +198,15 @@ def print_stats(con: duckdb.DuckDBPyConnection, label: str, total: int) -> None:
           f"| query-block — min:{mn:,}  median:{med:,}  max:{mx:,}")
 
 
-def write_output(con: duckdb.DuckDBPyConnection, path: Path) -> None:
+def write_output(con: duckdb.DuckDBPyConnection, path: Path, batch_size: int = 50_000) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = con.execute("SELECT raw_line FROM filtered").fetchall()
+    cursor = con.execute("SELECT raw_line FROM filtered")
     with open(path, "w") as fh:
-        for (line,) in rows:
-            fh.write(line + "\n")
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            fh.writelines(line + "\n" for (line,) in batch)
 
 
 # ---------------------------------------------------------------------------
@@ -225,12 +232,10 @@ def main() -> None:
     con = duckdb.connect()
 
     print(f"Reading PAF: {args.input}")
-    total = load_paf(con, args.input)
+    total, _ = load_and_filter_scalars(con, args.input, args)
     print(f"  Total records: {total:,}")
 
     print("\nApplying filters:")
-    apply_scalar_filters(con, args)
-
     where = _build_where(args)
     if where != "TRUE":
         print_stats(con, "scalar filters", total)
